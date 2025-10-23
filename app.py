@@ -14,7 +14,7 @@ st.caption("Developed by Matthew Joseph Viernes | Agusan del Sur State College o
 # -------------------------------
 # LOAD DATA (from GitHub or local)
 # -------------------------------
-url = "https://raw.githubusercontent.com/<username>/<repo>/main/data/microplastic_data.csv"
+url = "https://github.com/matthewjosephtviernes-spec/microplastic_system.git"
 
 data = None  # placeholder
 
@@ -68,3 +68,4 @@ if all(col in data.columns for col in ["Study_Location", "MP_Count"]):
     st.pyplot(fig2)
 else:
     st.warning("Missing 'Study_Location' or 'MP_Count' columns for grouped chart.")
+
