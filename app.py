@@ -15,7 +15,7 @@ st.caption("Developed by Matthew Joseph Viernes | Agusan del Sur State College o
 # LOAD DATA FROM GITHUB
 # -------------------------------
 # 🔽 Replace the link below with your RAW GitHub CSV link
-url = "https://raw.githubusercontent.com/<username>/<repo>/main/Data1_Microplastic.csv"
+url = "https://raw.githubusercontent.com/matthewjosephtviernes-spec/microplastic_system/refs/heads/main/data/Data1_Microplastic.csv"
 
 try:
     data = pd.read_csv(url)
@@ -72,6 +72,7 @@ else:
 # -------------------------------
 st.markdown("---")
 st.caption("© 2025 | Predictive Risk Modeling for Microplastic Pollution | Streamlit App")
+
 
 
 
