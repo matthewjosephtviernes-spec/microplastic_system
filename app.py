@@ -2,37 +2,35 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import os
 
 # -------------------------------
 # APP TITLE AND DESCRIPTION
 # -------------------------------
-st.set_page_config(page_title="Microplastic Pollution System", layout="wide")
+st.set_page_config(page_title="Microplastic Pollution Dashboard", layout="wide")
+
 st.title("🌊 Predictive Risk Modeling for Microplastic Pollution")
 st.caption("Developed by Matthew Joseph Viernes | Agusan del Sur State College of Agriculture and Technology")
 
 # -------------------------------
-# LOAD DATA (from GitHub or local)
+# LOAD DATA FROM GITHUB
 # -------------------------------
-url = "https://raw.githubusercontent.com/matthewjosephtviernes-spec/microplastic_system/refs/heads/main/data/Data1_Microplastic.csv"
+# 🔽 Replace the link below with your RAW GitHub CSV link
+url = "https://raw.githubusercontent.com/<username>/<repo>/main/Data1_Microplastic.csv"
 
-data = None  # placeholder
-
-# Try loading from GitHub
 try:
     data = pd.read_csv(url)
-    st.success("✅ Successfully loaded dataset from GitHub.")
+    st.success("✅ Successfully loaded dataset from GitHub!")
 except Exception as e:
     st.warning("⚠️ Could not load data from GitHub. Attempting to load local file...")
-    if os.path.exists("data/microplastic_data.csv"):
-        data = pd.read_csv("data/microplastic_data.csv")
-        st.info("📂 Loaded local dataset successfully.")
-    else:
-        st.error("❌ No dataset found! Please upload your CSV file in the 'data' folder or update the GitHub link.")
+    try:
+        data = pd.read_csv("Data1_Microplastic.csv")
+        st.info("📁 Loaded local dataset successfully.")
+    except Exception as e2:
+        st.error("❌ Failed to load any dataset. Please check your file path or GitHub link.")
         st.stop()
 
 # -------------------------------
-# DISPLAY DATA
+# DATA PREVIEW
 # -------------------------------
 st.subheader("📊 Dataset Preview")
 st.dataframe(data.head())
@@ -40,34 +38,42 @@ st.dataframe(data.head())
 # -------------------------------
 # SUMMARY STATISTICS
 # -------------------------------
-if not data.empty:
-    st.subheader("📈 Summary Statistics")
-    st.write(data.describe())
-else:
-    st.warning("Dataset is empty. Please check your CSV content.")
+st.subheader("📈 Summary Statistics")
+st.write(data.describe(include='all'))
 
 # -------------------------------
 # DATA VISUALIZATION
 # -------------------------------
+st.subheader("🧠 Microplastic Count Distribution")
+
 if "MP_Count" in data.columns:
-    st.subheader("🧠 Microplastic Count Distribution")
     fig, ax = plt.subplots()
     sns.histplot(data["MP_Count"], kde=True, ax=ax)
+    ax.set_title("Distribution of Microplastic Count")
     st.pyplot(fig)
 else:
-    st.error("⚠️ Column 'MP_Count' not found in dataset. Check your CSV headers.")
+    st.error("Column 'MP_Count' not found in dataset.")
 
 # -------------------------------
-# GROUPED CHART
+# GROUPED CHART EXAMPLE
 # -------------------------------
-if all(col in data.columns for col in ["Study_Location", "MP_Count"]):
+if "Study_Location" in data.columns and "MP_Count" in data.columns:
     st.subheader("🌍 Microplastic Count by Study Location")
     fig2, ax2 = plt.subplots(figsize=(10, 5))
     sns.barplot(x="Study_Location", y="MP_Count", data=data, ax=ax2)
     plt.xticks(rotation=45)
+    ax2.set_title("Average Microplastic Count per Location")
     st.pyplot(fig2)
 else:
-    st.warning("Missing 'Study_Location' or 'MP_Count' columns for grouped chart.")
+    st.warning("Columns 'Study_Location' or 'MP_Count' missing — cannot generate grouped chart.")
+
+# -------------------------------
+# FOOTER
+# -------------------------------
+st.markdown("---")
+st.caption("© 2025 | Predictive Risk Modeling for Microplastic Pollution | Streamlit App")
+
+
 
 
 
