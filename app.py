@@ -12,10 +12,10 @@ st.title("🌊 Predictive Risk Modeling for Microplastic Pollution")
 st.caption("Developed by Matthew Joseph Viernes | Agusan del Sur State College of Agriculture and Technology")
 
 # -------------------------------
-# LOAD DATA FROM GITHUB
+# LOAD DATA FROM GITHUB OR LOCAL
 # -------------------------------
-# 🔽 Replace the link below with your RAW GitHub CSV link
-url = "https://raw.githubusercontent.com/matthewjosephtviernes-spec/microplastic_system/refs/heads/main/data/Data1_Microplastic.csv"
+# Replace this URL with your actual GitHub Raw CSV link
+url = "https://raw.githubusercontent.com/<username>/<repo>/main/Data1_Microplastic.csv"
 
 try:
     data = pd.read_csv(url)
@@ -30,6 +30,19 @@ except Exception as e:
         st.stop()
 
 # -------------------------------
+# COLUMN NAME FIXING
+# -------------------------------
+# Handle variations in column names
+data.columns = data.columns.str.strip()  # remove spaces
+
+# Find the count column (whatever its exact name)
+mp_count_col = None
+for col in data.columns:
+    if "MP_Count" in col or "items/individual" in col:
+        mp_count_col = col
+        break
+
+# -------------------------------
 # DATA PREVIEW
 # -------------------------------
 st.subheader("📊 Dataset Preview")
@@ -42,36 +55,38 @@ st.subheader("📈 Summary Statistics")
 st.write(data.describe(include='all'))
 
 # -------------------------------
-# DATA VISUALIZATION
+# MICROPLASTIC COUNT DISTRIBUTION
 # -------------------------------
 st.subheader("🧠 Microplastic Count Distribution")
 
-if "MP_Count" in data.columns:
+if mp_count_col:
     fig, ax = plt.subplots()
-    sns.histplot(data["MP_Count"], kde=True, ax=ax)
-    ax.set_title("Distribution of Microplastic Count")
+    sns.histplot(data[mp_count_col], kde=True, ax=ax)
+    ax.set_title("Distribution of Microplastic Count (items/individual)")
     st.pyplot(fig)
 else:
-    st.error("Column 'MP_Count' not found in dataset.")
+    st.warning("⚠️ No 'MP_Count' column detected for visualization.")
 
 # -------------------------------
-# GROUPED CHART EXAMPLE
+# MICROPLASTIC COUNT BY LOCATION
 # -------------------------------
-if "Study_Location" in data.columns and "MP_Count" in data.columns:
+if "Study_Location" in data.columns and mp_count_col:
     st.subheader("🌍 Microplastic Count by Study Location")
     fig2, ax2 = plt.subplots(figsize=(10, 5))
-    sns.barplot(x="Study_Location", y="MP_Count", data=data, ax=ax2)
+    sns.barplot(x="Study_Location", y=mp_count_col, data=data, ax=ax2)
+    ax2.set_title("Average Microplastic Count per Study Location")
     plt.xticks(rotation=45)
-    ax2.set_title("Average Microplastic Count per Location")
     st.pyplot(fig2)
 else:
-    st.warning("Columns 'Study_Location' or 'MP_Count' missing — cannot generate grouped chart.")
+    st.warning("⚠️ Missing columns needed for grouped chart visualization.")
 
 # -------------------------------
 # FOOTER
 # -------------------------------
 st.markdown("---")
 st.caption("© 2025 | Predictive Risk Modeling for Microplastic Pollution | Streamlit App")
+
+
 
 
 
