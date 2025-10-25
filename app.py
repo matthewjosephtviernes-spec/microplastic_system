@@ -244,26 +244,66 @@ if mp_count_col:
     df_raw["_MP_Count_parsed"] = df_raw[mp_count_col].apply(parse_mp_count)
     st.write(f"Parsed MP count saved to '_MP_Count_parsed' — non-null: {df_raw['_MP_Count_parsed'].notna().sum()}")
 
-# Preprocessing controls
+# -------------------------
+# Preprocessing controls (refactored for clarity)
+# -------------------------
 st.sidebar.header("2) Preprocessing")
+st.sidebar.write("Choose how to handle missing values and imputation.")
+
+# Option to drop rows with any missing values
 drop_na = st.sidebar.checkbox("Drop rows with any missing values", value=False)
+# Strategy for numeric imputation when not dropping rows
 impute_strategy = st.sidebar.selectbox("Numeric imputation strategy", ["mean", "median", "most_frequent"], index=0)
 
+def impute_numeric_columns(df_in: pd.DataFrame, strategy: str) -> pd.DataFrame:
+    """Impute numeric columns using SimpleImputer and the chosen strategy.
+    Returns a new DataFrame with numeric columns imputed.
+    """
+    df_out = df_in.copy()
+    numeric_cols = df_out.select_dtypes(include=[np.number]).columns.tolist()
+    if not numeric_cols:
+        return df_out
+    imputer = SimpleImputer(strategy=strategy)
+    df_out[numeric_cols] = imputer.fit_transform(df_out[numeric_cols])
+    return df_out
+
+def impute_categorical_columns(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Fill missing values in object/category columns with their mode (most frequent value).
+    If a column has no clear mode, fill with an empty string.
+    """
+    df_out = df_in.copy()
+    cat_cols = df_out.select_dtypes(include=["object", "category"]).columns.tolist()
+    for col in cat_cols:
+        if df_out[col].isna().any():
+            mode_series = df_out[col].mode()
+            fill_value = mode_series.iloc[0] if not mode_series.empty else ""
+            df_out[col] = df_out[col].fillna(fill_value)
+    return df_out
+
+# Apply the chosen preprocessing path with clear steps and messages
 if drop_na:
-    before = len(df_raw)
-    df = df_raw.dropna()
-    st.write(f"Dropped rows with missing values: {before} -> {len(df)}")
+    before_rows = df_raw.shape[0]
+    df = df_raw.dropna(axis=0, how="any").reset_index(drop=True)
+    after_rows = df.shape[0]
+    st.info(f"Dropped rows with missing values: {before_rows} -> {after_rows}")
 else:
-    df = df_raw.copy()
-    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    if num_cols:
-        imputer = SimpleImputer(strategy=impute_strategy)
-        df[num_cols] = imputer.fit_transform(df[num_cols])
-    for c in df.select_dtypes(include=["object", "category"]).columns:
-        if df[c].isna().any():
-            mode = df[c].mode()
-            fill = mode.iloc[0] if not mode.empty else ""
-            df[c] = df[c].fillna(fill)
+    # Work on a copy to avoid changing the original preview dataframe
+    df = df_raw.copy().reset_index(drop=True)
+
+    # 1) Impute numeric columns using chosen strategy
+    df = impute_numeric_columns(df, impute_strategy)
+
+    # 2) Impute categorical columns using mode
+    df = impute_categorical_columns(df)
+
+    # 3) Report how many missing values remain, per column
+    remaining_na = df.isna().sum()
+    total_remaining = int(remaining_na.sum())
+    if total_remaining == 0:
+        st.success("No missing values remain after imputation.")
+    else:
+        nonzero = remaining_na[remaining_na > 0]
+        st.warning(f"There are {total_remaining} remaining missing values. Breakdown:\n{nonzero.to_dict()}")
 
 st.write("✅ Preprocessing finished")
 st.write(f"Dataset shape after cleaning: {df.shape}")
