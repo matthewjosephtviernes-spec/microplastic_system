@@ -14,7 +14,7 @@ st.title("Microplastic Risk Prediction System")
 # ========================================================
 @st.cache_data
 def load_data():
-    url = "YOUR_GITHUB_RAW_LINK"
+    url = "https://github.com/matthewjosephtviernes-spec/microplastic_system/blob/main/data/Data1_Microplastic.csv"
     data = pd.read_csv(url)
     return data
 
@@ -83,3 +83,4 @@ plt.figure(figsize=(6,4))
 df["Risk_Level"].value_counts().plot(kind='bar')
 plt.title("Distribution of Risk Levels")
 st.pyplot()
+
