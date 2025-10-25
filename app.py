@@ -1,96 +1,85 @@
 import streamlit as st
 import pandas as pd
+from sklearn.model_selection import train_test_split, KFold, cross_val_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 import matplotlib.pyplot as plt
-import seaborn as sns
 
-# -------------------------------
-# APP TITLE AND DESCRIPTION
-# -------------------------------
-st.set_page_config(page_title="Microplastic Pollution Dashboard", layout="wide")
+st.title("Microplastic Risk Prediction System")
 
-st.title("🌊 Predictive Risk Modeling for Microplastic Pollution")
-st.caption("Developed by Matthew Joseph Viernes | Agusan del Sur State College of Agriculture and Technology")
-
-# -------------------------------
-# LOAD DATA FROM GITHUB OR LOCAL
-# -------------------------------
-# Replace this URL with your actual GitHub Raw CSV link
-url = "https://raw.githubusercontent.com/matthewjosephtviernes-spec/microplastic_system/refs/heads/main/data/Data1_Microplastic.csv"
-
-try:
+# ========================================================
+# STEP 3: LOAD DATA + PREPROCESSING
+# ========================================================
+@st.cache_data
+def load_data():
+    url = "YOUR_GITHUB_RAW_LINK"
     data = pd.read_csv(url)
-    st.success("✅ Successfully loaded dataset from GitHub!")
-except Exception as e:
-    st.warning("⚠️ Could not load data from GitHub. Attempting to load local file...")
-    try:
-        data = pd.read_csv("Data1_Microplastic.csv")
-        st.info("📁 Loaded local dataset successfully.")
-    except Exception as e2:
-        st.error("❌ Failed to load any dataset. Please check your file path or GitHub link.")
-        st.stop()
+    return data
 
-# -------------------------------
-# COLUMN NAME FIXING
-# -------------------------------
-# Handle variations in column names
-data.columns = data.columns.str.strip()  # remove spaces
+df = load_data()
+st.subheader("Dataset Preview")
+st.dataframe(df)
 
-# Find the count column (whatever its exact name)
-mp_count_col = None
-for col in data.columns:
-    if "MP_Count" in col or "items/individual" in col:
-        mp_count_col = col
-        break
+# Preprocessing
+df = df.dropna()
+st.write("✅ Data cleaned: Missing values removed")
 
-# -------------------------------
-# DATA PREVIEW
-# -------------------------------
-st.subheader("📊 Dataset Preview")
-st.dataframe(data.head())
-
-# -------------------------------
-# SUMMARY STATISTICS
-# -------------------------------
-st.subheader("📈 Summary Statistics")
-st.write(data.describe(include='all'))
-
-# -------------------------------
-# MICROPLASTIC COUNT DISTRIBUTION
-# -------------------------------
-st.subheader("🧠 Microplastic Count Distribution")
-
-if mp_count_col:
-    fig, ax = plt.subplots()
-    sns.histplot(data[mp_count_col], kde=True, ax=ax)
-    ax.set_title("Distribution of Microplastic Count (items/individual)")
-    st.pyplot(fig)
-else:
-    st.warning("⚠️ No 'MP_Count' column detected for visualization.")
-
-# -------------------------------
-# MICROPLASTIC COUNT BY LOCATION
-# -------------------------------
-if "Study_Location" in data.columns and mp_count_col:
-    st.subheader("🌍 Microplastic Count by Study Location")
-    fig2, ax2 = plt.subplots(figsize=(10, 5))
-    sns.barplot(x="Study_Location", y=mp_count_col, data=data, ax=ax2)
-    ax2.set_title("Average Microplastic Count per Study Location")
-    plt.xticks(rotation=45)
-    st.pyplot(fig2)
-else:
-    st.warning("⚠️ Missing columns needed for grouped chart visualization.")
-
-# -------------------------------
-# FOOTER
-# -------------------------------
-st.markdown("---")
-st.caption("© 2025 | Predictive Risk Modeling for Microplastic Pollution | Streamlit App")
+# Encode your columns here later (Risk_Level etc.)
 
 
+# ========================================================
+# STEP 4: MODELING
+# ========================================================
+st.header("⚙️ Model Training and Evaluation")
+
+X = df.drop("Risk_Level", axis=1)
+y = df["Risk_Level"]
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+
+models = {
+    "Random Forest": RandomForestClassifier(),
+    "Decision Tree": DecisionTreeClassifier(),
+    "Logistic Regression": LogisticRegression(max_iter=200)
+}
+
+results = {}
+for name, model in models.items():
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    results[name] = {
+        "Accuracy": accuracy_score(y_test, y_pred),
+        "Precision": precision_score(y_test, y_pred, average='macro'),
+        "Recall": recall_score(y_test, y_pred, average='macro'),
+        "F1 Score": f1_score(y_test, y_pred, average='macro')
+    }
+
+st.table(pd.DataFrame(results).T)
 
 
+# ========================================================
+# STEP 5: K-FOLD VALIDATION
+# ========================================================
+st.header("🔁 10-Fold Cross Validation")
+
+kfold = KFold(n_splits=10, shuffle=True, random_state=42)
+cv_scores = {}
+
+for name, model in models.items():
+    scores = cross_val_score(model, X, y, cv=kfold, scoring='accuracy')
+    cv_scores[name] = scores.mean()
+
+st.write(cv_scores)
 
 
+# ========================================================
+# STEP 6: VISUALIZATIONS
+# ========================================================
+st.header("📊 Data Visualization")
 
-
-
+plt.figure(figsize=(6,4))
+df["Risk_Level"].value_counts().plot(kind='bar')
+plt.title("Distribution of Risk Levels")
+st.pyplot()
