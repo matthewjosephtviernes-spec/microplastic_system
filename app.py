@@ -1,11 +1,24 @@
-# Redesigned Streamlit app for Microplastic Risk Prediction
-# - Cleaner structure, robust preprocessing, safer modeling fallbacks
-# - Improved visuals: aggregated category bars, rotated/annotated labels, cap pairplots
-# - Professional look via simple CSS and clearer sidebar steps
+#!/usr/bin/env python3
+"""
+Microplastic Risk Prediction System - Streamlit app (full app.py)
+
+This version includes:
+- File upload (CSV / Excel)
+- Robust parsing of MP count text values into numeric (_MP_Count_parsed)
+- Optional Risk_Level creation from parsed counts (Low/Medium/High)
+- Defensive preprocessing: coercion of numeric-like strings, imputation, one-hot encoding,
+  frequency encoding for very high cardinality columns, dropping all-NaN numeric columns
+- Safe train/test splitting with stratify checks & fallbacks
+- Classification, Regression and Clustering flows with multiple models
+- Adaptive K-Fold cross-validation with StratifiedKFold if possible, else fallback to KFold or reduced splits
+- Extensive warnings and user controls in sidebar
+"""
 
 import io
 import re
-from typing import Optional, Tuple, List, Dict
+import sys
+import traceback
+from typing import Optional, Tuple, List
 
 import streamlit as st
 import pandas as pd
@@ -25,87 +38,83 @@ from sklearn.metrics import (
     r2_score, mean_absolute_error, mean_squared_error,
     confusion_matrix, classification_report
 )
-from sklearn.metrics import silhouette_score
+
+# Streamlit page configuration
+st.set_page_config(page_title="Microplastic Risk Prediction System", layout="wide")
+st.title("Microplastic Risk Prediction System")
 
 # -------------------------
-# App configuration & style
+# Helper functions
 # -------------------------
-st.set_page_config(page_title="Microplastic Risk Prediction (Professional)", layout="wide")
-st.markdown(
-    """
-    <style>
-      .stApp { font-family: "Segoe UI", Roboto, "Helvetica Neue", Arial; }
-      .big-header { font-size:22px; font-weight:600; margin-bottom:6px; }
-      .muted { color: #6c757d; font-size:12px; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown('<div class="big-header">Microplastic Risk Prediction System</div>', unsafe_allow_html=True)
-st.write("A robust, professional Streamlit app for exploring microplastic datasets, preprocessing, modeling, and visualizations.")
-
-# -------------------------
-# Helpers
-# -------------------------
-@st.cache_data
-def safe_read_file(uploaded_file) -> Optional[pd.DataFrame]:
-    if uploaded_file is None:
-        return None
-    try:
-        name = uploaded_file.name.lower()
-        if name.endswith(".csv"):
-            return pd.read_csv(uploaded_file, engine="python", encoding="utf-8", on_bad_lines="skip")
-        if name.endswith((".xls", ".xlsx")):
-            return pd.read_excel(uploaded_file, engine="openpyxl")
-    except Exception as e:
-        st.error(f"Could not read file: {e}")
-        return None
-
 def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.rename(columns=lambda c: re.sub(r"[^\w]", "_", str(c).strip()))
-    return df
+    return df.rename(columns=lambda c: str(c).strip().replace("/", "_").replace(" ", "_"))
 
 def parse_mp_count(value) -> float:
+    """Parse textual MP count values into a numeric (mean of numbers found).
+    Handles ranges "0.3–2.5", ± notation "27.3 ± 6.5", single numbers, "~32.5", etc.
+    Returns np.nan when parsing fails or value indicates missing/ND.
+    """
     if pd.isna(value):
         return np.nan
     if isinstance(value, (int, float)):
-        return float(value)
+        try:
+            return float(value)
+        except Exception:
+            return np.nan
     s = str(value).strip()
-    if s.lower() in ("n/a", "na", "-", "", "nd", "no", "no (nd)", "not detected"):
+    if not s:
         return np.nan
+    lowec = s.lower()
+    if any(token in lowec for token in ("n/a", "na", "nd", "not detected", "no", "no (nd)")):
+        return np.nan
+    # normalize dashes
     s = s.replace("–", "-").replace("—", "-")
-    # handle "12 ± 2" etc
+    # ± pattern -> take the main number before ±
     if "±" in s:
         m = re.search(r"([-+]?\d*\.\d+|\d+)\s*±", s)
         if m:
             try:
                 return float(m.group(1))
-            except:
+            except Exception:
                 pass
+    # extract numbers
     nums = re.findall(r"[-+]?\d*\.\d+|\d+", s)
     if not nums:
         return np.nan
     try:
         nums_f = [float(n) for n in nums]
         return float(np.mean(nums_f))
-    except:
+    except Exception:
         return np.nan
 
-def summarize_cardinality(df: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    for c in df.columns:
-        rows.append({"column": c, "dtype": str(df[c].dtype), "nunique": int(df[c].nunique(dropna=False))})
-    return pd.DataFrame(rows).sort_values("nunique")
+def safe_read_file(uploaded_file) -> Optional[pd.DataFrame]:
+    """Read uploaded CSV or Excel robustly."""
+    try:
+        filename = uploaded_file.name.lower()
+        if filename.endswith(".csv"):
+            # Use python engine to be tolerant of irregularities
+            return pd.read_csv(uploaded_file, engine="python", encoding="utf-8", on_bad_lines="skip")
+        elif filename.endswith((".xls", ".xlsx")):
+            return pd.read_excel(uploaded_file)
+        else:
+            st.error("Unsupported file format. Upload .csv or .xls/.xlsx")
+            return None
+    except Exception as e:
+        st.error(f"Failed to read file: {e}")
+        st.exception(e)
+        return None
 
-def aggregate_small_categories(series: pd.Series, top_n: int = 20, other_name: str = "Other") -> pd.Series:
-    vc = series.fillna("NaN").astype(str).value_counts()
-    if len(vc) <= top_n:
-        return vc
-    top = vc.iloc[:top_n]
-    other_sum = vc.iloc[top_n:].sum()
-    top[other_name] = other_sum
-    return top
+def reduce_high_cardinality(df: pd.DataFrame, cat_cols: List[str], threshold: int = 50) -> pd.DataFrame:
+    """Frequency-encode columns with cardinality above threshold."""
+    out = df.copy()
+    for c in cat_cols:
+        if out[c].nunique(dropna=False) > threshold:
+            freqs = out[c].value_counts(normalize=True)
+            out[c] = out[c].map(freqs).fillna(0.0)
+    return out
+
+def has_nan_or_inf(arr: np.ndarray) -> bool:
+    return np.isnan(arr).any() or np.isinf(arr).any()
 
 def prepare_features(
     df: pd.DataFrame,
@@ -113,35 +122,55 @@ def prepare_features(
     target_col: Optional[str],
     task: str,
     impute_strategy: str = "mean",
+    high_card_threshold: int = 40,
 ) -> Tuple[pd.DataFrame, Optional[np.ndarray], Optional[LabelEncoder]]:
+    """
+    Prepares feature matrix X and target y:
+      - Subset selected features (+ target)
+      - Convert MP_Presence to binary if present
+      - Frequency-encode very high-cardinality categoricals
+      - One-hot encode remaining categoricals
+      - Try to coerce object-like numeric columns to numeric
+      - Drop numeric columns that are all NaN (imputer can't fit them)
+      - Impute numeric columns
+      - Scale numeric columns
+      - Align and return X (DataFrame), y (numpy array or None), label_encoder if used
+    """
     df_sub = df[selected_features + ([target_col] if target_col else [])].copy()
-    # drop columns with single unique value
+
+    # Drop non-informative columns (single unique value)
     drop_cols = [c for c in df_sub.columns if df_sub[c].nunique(dropna=False) <= 1]
     if drop_cols:
-        df_sub.drop(columns=drop_cols, inplace=True)
+        df_sub = df_sub.drop(columns=drop_cols)
         st.info(f"Dropped non-informative columns: {drop_cols}")
-
-    if target_col and target_col not in df_sub.columns:
-        st.error("Selected target column not present after preprocessing.")
-        return pd.DataFrame(), None, None
 
     X = df_sub.drop(columns=[target_col]) if target_col else df_sub.copy()
     y = df_sub[target_col] if target_col else None
 
-    # special handling for MP presence-like columns
-    for c in X.columns:
-        if "mp_presence" in c.lower() or c.lower() == "mp_presence".lower():
-            X[c] = X[c].astype(str).str.lower().map(lambda v: 1 if "yes" in v else (0 if "no" in v or "nd" in v or v.strip() == "" else np.nan))
+    # Convert MP_Presence to binary 1/0/NaN
+    if "MP_Presence" in X.columns:
+        X["MP_Presence"] = X["MP_Presence"].astype(str).str.lower().map(
+            lambda v: 1 if "yes" in v else (0 if "no" in v or "nd" in v or v.strip() == "" else np.nan)
+        )
 
-    # reduce very high cardinality for object columns by frequency mapping
+    # Frequency-encode high-cardinality categorical columns
     obj_cols = X.select_dtypes(include=["object", "category"]).columns.tolist()
-    for c in obj_cols:
-        if X[c].nunique() > 40:
-            freqs = X[c].value_counts(normalize=True)
-            X[c] = X[c].map(freqs).fillna(0.0)
+    X = reduce_high_cardinality(X, obj_cols, threshold=high_card_threshold)
 
-    # one-hot encode categoricals (safe)
+    # One-hot encode remaining categorical/object columns
     X = pd.get_dummies(X, drop_first=True)
+
+    # Attempt to coerce object-like columns to numeric when possible (strip commas, units)
+    coerced = []
+    for col in X.columns:
+        if X[col].dtype == object:
+            cleaned = X[col].astype(str).str.replace(r"[,\(\)%\s]+", "", regex=True)
+            coerced_series = pd.to_numeric(cleaned.replace("", np.nan), errors="coerce")
+            if coerced_series.notna().sum() > 0:
+                X[col] = coerced_series
+                coerced.append(col)
+    if coerced:
+        st.info(f"Coerced object columns to numeric where possible: {coerced}")
 
     # Encode target if classification
     label_enc = None
@@ -149,209 +178,284 @@ def prepare_features(
         if y.dtype == object or str(y.dtype).startswith("category"):
             label_enc = LabelEncoder()
             y = label_enc.fit_transform(y.astype(str))
-        else:
-            # if numeric but discrete, keep as-is
-            y = pd.to_numeric(y, errors="coerce")
     elif y is not None and task == "regression":
         y = pd.to_numeric(y, errors="coerce")
 
-    # Place y as Series and drop rows with NaN target
+    # If target exists remove rows where y is NaN
     if y is not None:
         y = pd.Series(y, index=df_sub.index)
-        if y.isna().any():
-            n_drop = y.isna().sum()
-            st.warning(f"Dropping {n_drop} rows with missing target values.")
-            mask = ~y.isna()
-            X = X.loc[mask].copy()
-            y = y.loc[mask].copy()
+        mask_y_na = y.isna()
+        if mask_y_na.any():
+            count_drop = int(mask_y_na.sum())
+            st.warning(f"Dropping {count_drop} rows because target contains NaN.")
+            X = X.loc[~mask_y_na].copy()
+            y = y.loc[~mask_y_na].copy()
 
-    # Impute numeric cols
+    # Numeric columns
     numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+
+    # Drop numeric columns that are all NaN (imputer can't fit)
+    allnan_numeric = [c for c in numeric_cols if X[c].isna().all()]
+    if allnan_numeric:
+        st.warning(f"Dropping numeric columns that are entirely NaN: {allnan_numeric}")
+        X = X.drop(columns=allnan_numeric)
+        numeric_cols = [c for c in numeric_cols if c not in allnan_numeric]
+
+    # Impute numeric columns if present
     if numeric_cols:
         imputer = SimpleImputer(strategy=impute_strategy)
-        X[numeric_cols] = imputer.fit_transform(X[numeric_cols])
+        try:
+            X_numeric = X[numeric_cols]
+            X[numeric_cols] = imputer.fit_transform(X_numeric)
+        except Exception as exc:
+            st.error(f"Numeric imputation failed: {exc}")
+            raise
 
-    # Warn & drop any remaining non-numeric
-    non_numeric = X.select_dtypes(exclude=[np.number]).columns.tolist()
-    if non_numeric:
-        st.warning(f"Dropping non-numeric columns after encoding: {non_numeric}")
-        X.drop(columns=non_numeric, inplace=True)
+    # Drop any remaining non-numeric columns (should be none)
+    non_numeric_remaining = X.select_dtypes(exclude=[np.number]).columns.tolist()
+    if non_numeric_remaining:
+        st.warning(f"Dropping non-numeric columns after encoding/coercion: {non_numeric_remaining}")
+        X = X.drop(columns=non_numeric_remaining)
 
-    # Scale numeric features
-    num_cols = X.columns.tolist()
-    if num_cols:
+    # Scale numeric columns
+    numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+    if numeric_cols:
         scaler = StandardScaler()
-        X[num_cols] = scaler.fit_transform(X[num_cols])
+        X[numeric_cols] = scaler.fit_transform(X[numeric_cols])
 
-    # Final drop rows with NaNs (should be none)
+    # Drop rows with NaNs in features (protection)
     mask_x_na = X.isna().any(axis=1)
     if mask_x_na.any():
-        st.warning(f"Dropping {mask_x_na.sum()} rows with NaN after imputation.")
+        st.warning(f"Dropping {int(mask_x_na.sum())} rows because features still contain NaN after imputation.")
         X = X.loc[~mask_x_na].copy()
         if y is not None:
             y = y.loc[X.index].copy()
 
+    # Ensure X, y align and return
     if y is not None:
-        return X, np.asarray(y), label_enc
-    return X, None, label_enc
+        X = X.loc[y.index]
+        y = np.asarray(y)
 
-def safe_train_test_split(X, y, test_size: float, random_state: int, task: str):
-    if y is None:
-        return None, None, None, None
-    stratify = None
-    if task == "classification":
-        unique, counts = np.unique(y, return_counts=True)
-        if len(unique) >= 2 and np.min(counts) >= 2:
-            stratify = y
-        else:
-            st.warning("Stratify disabled: some classes have fewer than 2 samples.")
-            stratify = None
-    try:
-        return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=stratify)
-    except Exception as e:
-        st.warning(f"train_test_split with stratify failed: {e}. Retrying without stratify.")
-        return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=None)
-
-def has_nan_or_inf(arr) -> bool:
-    return np.isnan(arr).any() or np.isinf(arr).any()
+    return X, y, label_enc
 
 # -------------------------
-# Sidebar: upload & preprocessing
+# UI: Upload dataset
 # -------------------------
-st.sidebar.header("1) Dataset")
-uploaded_file = st.sidebar.file_uploader("Upload CSV or Excel (e.g., Data1_Microplastic.csv)", type=["csv", "xls", "xlsx"])
-if not uploaded_file:
-    st.info("Please upload your dataset file to proceed.")
+st.sidebar.header("Upload Dataset")
+uploaded_file = st.sidebar.file_uploader("Upload a CSV or Excel file (.csv, .xls, .xlsx)", type=["csv", "xls", "xlsx"])
+
+if uploaded_file is None:
+    st.info("Upload a dataset to begin. This app expects environmental / microplastic measurement data.")
     st.stop()
 
-df_raw = safe_read_file(uploaded_file)
-if df_raw is None:
+df_original = safe_read_file(uploaded_file)
+if df_original is None:
     st.stop()
 
-st.sidebar.markdown(f"**File:** {uploaded_file.name} — rows: {df_raw.shape[0]} cols: {df_raw.shape[1]}")
-df_raw = clean_column_names(df_raw)
-st.subheader("Data preview (first 50 rows)")
-st.dataframe(df_raw.head(50))
+st.subheader("Raw dataset preview")
+st.write(f"Filename: {uploaded_file.name} — {df_original.shape[0]} rows × {df_original.shape[1]} columns")
+st.dataframe(df_original.head(50))
 
-# Parse MP count candidate
-mp_count_candidates = [c for c in df_raw.columns if "mp_count" in c.lower() or "count" in c.lower() or "items" in c.lower()]
-mp_count_col = None
-if mp_count_candidates:
-    mp_count_col = st.sidebar.selectbox("Column to parse as numeric MP count (optional)", [""] + mp_count_candidates)
-else:
-    mp_count_col = st.sidebar.selectbox("Column to parse as numeric MP count (optional)", [""] + df_raw.columns.tolist())
-if mp_count_col:
-    df_raw["_MP_Count_parsed"] = df_raw[mp_count_col].apply(parse_mp_count)
-    st.write(f"Parsed MP count saved to '_MP_Count_parsed' — non-null: {df_raw['_MP_Count_parsed'].notna().sum()}")
+# Clean column names
+df_original = clean_column_names(df_original)
 
-# Preprocessing controls
-st.sidebar.header("2) Preprocessing")
-drop_na = st.sidebar.checkbox("Drop rows with any missing values", value=False)
+# -------------------------
+# Detect candidate MP count columns and parse
+# -------------------------
+mp_candidates = [c for c in df_original.columns if "MP_Count" in c or "count" in c.lower() or "items" in c.lower()]
+st.sidebar.header("MP Count / Target helpers")
+st.sidebar.write("Detected possible MP count columns (auto):")
+for c in mp_candidates[:10]:
+    st.sidebar.write(f"- {c}")
+
+mp_count_col_choice = st.sidebar.selectbox("Select column to parse as numeric MP count (optional)", [""] + df_original.columns.tolist())
+if mp_count_col_choice:
+    df_original["_MP_Count_parsed"] = df_original[mp_count_col_choice].apply(parse_mp_count)
+    st.write("Parsed MP count preview:")
+    st.dataframe(df_original[[mp_count_col_choice, "_MP_Count_parsed"]].head(20))
+
+# -------------------------
+# Preprocessing options
+# -------------------------
+st.sidebar.header("Preprocessing Options")
+drop_na = st.sidebar.checkbox("Drop rows with any missing values (otherwise impute numeric values)", value=False)
 impute_strategy = st.sidebar.selectbox("Numeric imputation strategy", ["mean", "median", "most_frequent"], index=0)
+high_card_threshold = st.sidebar.number_input("High-cardinality threshold for frequency encoding", value=40, min_value=5, max_value=1000, step=1)
 
+# Apply basic imputation or drop at dataframe level
+df = df_original.copy()
 if drop_na:
-    before = len(df_raw)
-    df = df_raw.dropna()
-    st.write(f"Dropped rows with missing values: {before} -> {len(df)}")
+    before = df.shape[0]
+    df = df.dropna()
+    st.write(f"Dropped rows with missing values: {before} -> {df.shape[0]}")
 else:
-    df = df_raw.copy()
+    # impute numeric columns at dataframe-level as preliminary step to help parsing
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     if num_cols:
-        imputer = SimpleImputer(strategy=impute_strategy)
-        df[num_cols] = imputer.fit_transform(df[num_cols])
+        df[num_cols] = SimpleImputer(strategy=impute_strategy).fit_transform(df[num_cols])
+    # Fill object columns with mode where missing
     for c in df.select_dtypes(include=["object", "category"]).columns:
-        if df[c].isna().any():
+        if df[c].isna().sum():
             mode = df[c].mode()
-            fill = mode.iloc[0] if not mode.empty else ""
-            df[c] = df[c].fillna(fill)
+            if not mode.empty:
+                df[c] = df[c].fillna(mode.iloc[0])
+            else:
+                df[c] = df[c].fillna("")
 
-st.write("✅ Preprocessing finished")
-st.write(f"Dataset shape after cleaning: {df.shape}")
+st.write("✅ Basic preprocessing done")
+st.write(f"Working dataset shape: {df.shape}")
+st.dataframe(df.head(20))
 
 # -------------------------
-# Modeling selection
+# Risk_Level creation (optional)
 # -------------------------
-st.sidebar.header("3) Modeling & Features")
-task = st.sidebar.selectbox("Task", ("classification", "regression", "clustering"))
+st.sidebar.header("Risk Level (optional)")
+auto_risk = st.sidebar.checkbox("Create Risk_Level from _MP_Count_parsed if available", value=("_MP_Count_parsed" in df.columns))
+if auto_risk and "_MP_Count_parsed" in df.columns:
+    use_quantiles = st.sidebar.checkbox("Use tertile (quantile) thresholds", value=True)
+    if use_quantiles:
+        valid_counts = df["_MP_Count_parsed"].dropna()
+        if len(valid_counts) >= 3:
+            thr_low = float(valid_counts.quantile(1/3))
+            thr_medium = float(valid_counts.quantile(2/3))
+        else:
+            thr_low, thr_medium = 1.0, 3.0
+    else:
+        thr_low = st.sidebar.number_input("Low threshold (<=)", value=1.0, step=0.1)
+        thr_medium = st.sidebar.number_input("Medium threshold (<=)", value=3.0, step=0.1)
 
-target_col = ""
-if task != "clustering":
-    target_col = st.sidebar.selectbox("Target column (for supervised tasks)", [""] + df.columns.tolist())
-    if target_col == "" or target_col is None:
-        st.sidebar.warning("Please select a target column for supervised tasks.")
-        st.stop()
+    def assign_risk(count):
+        try:
+            if pd.isna(count):
+                return np.nan
+            c = float(count)
+            if c <= thr_low:
+                return "Low"
+            elif c <= thr_medium:
+                return "Medium"
+            else:
+                return "High"
+        except Exception:
+            return np.nan
 
-all_cols = df.columns.tolist()
-default_features = [c for c in all_cols if c != target_col]
-selected_features = st.sidebar.multiselect("Select feature columns (at least one)", all_cols, default=default_features)
+    df["Risk_Level"] = df["_MP_Count_parsed"].apply(assign_risk)
+    st.write("Risk_Level sample distribution:")
+    st.write(df["Risk_Level"].value_counts(dropna=False))
+
+# -------------------------
+# Modeling selections
+# -------------------------
+st.sidebar.header("Modeling & Evaluation")
+task = st.sidebar.radio("Select task", ("classification", "regression", "clustering"))
+
+st.sidebar.markdown("Select target column (for classification/regression)")
+target_col = st.sidebar.selectbox("Target column (leave blank for clustering)", [""] + df.columns.tolist())
+if task in ("classification", "regression") and (target_col == "" or target_col is None):
+    st.sidebar.warning("Please select a target for supervised tasks (e.g., Risk_Level for classification, _MP_Count_parsed for regression).")
+    st.stop()
+
+# Features selection
+all_columns = df.columns.tolist()
+default_features = [c for c in all_columns if c != target_col]
+selected_features = st.sidebar.multiselect("Select feature columns (default: all except target)", all_columns, default=default_features)
 if not selected_features:
     st.sidebar.error("Select at least one feature column.")
     st.stop()
 
-X, y, label_enc = prepare_features(df, selected_features, target_col if target_col else None, task, impute_strategy=impute_strategy)
-st.write(f"Prepared features: X shape {X.shape}" + (f", y shape {y.shape}" if y is not None else ""))
+# Train/test split params
+test_size = st.sidebar.slider("Test size (fraction)", 0.05, 0.5, 0.2, 0.05)
+random_state = int(st.sidebar.number_input("Random state", value=42, step=1))
 
-if X.shape[1] == 0:
-    st.error("No usable features after preprocessing. Please revise your feature selection.")
+# -------------------------
+# Prepare X and y
+# -------------------------
+try:
+    X, y, label_enc = prepare_features(df, selected_features, target_col if target_col else None, task,
+                                      impute_strategy=impute_strategy, high_card_threshold=high_card_threshold)
+except Exception as exc:
+    st.error("Feature preparation failed. See details in the error below.")
+    st.exception(exc)
     st.stop()
 
-# Train/test split options
-st.sidebar.header("4) Train/Test split")
-test_size = st.sidebar.slider("Test size", 0.05, 0.5, 0.2, 0.05)
-random_state = int(st.sidebar.number_input("Random state", value=42, step=1))
+st.write("Feature matrix and target prepared.")
+st.write(f"X shape: {X.shape}")
+if y is not None:
+    st.write(f"y shape: {y.shape} | unique values (if classification): {np.unique(y)[:20]}")
+
+if X.shape[1] == 0:
+    st.error("No usable features after preprocessing. Please adjust selected features.")
+    st.stop()
+
+# -------------------------
+# Safe train/test split with stratify/fallbacks
+# -------------------------
+def safe_train_test_split(X_df: pd.DataFrame, y_arr: Optional[np.ndarray], test_size: float, random_state: int, task: str):
+    if y_arr is None:
+        return None, None, None, None
+    stratify_param = None
+    if task == "classification":
+        unique, counts = np.unique(y_arr, return_counts=True)
+        if len(unique) > 1 and np.min(counts) >= 2:
+            stratify_param = y_arr
+        else:
+            st.warning("Stratified split skipped: target has a single class or at least one class has fewer than 2 samples.")
+            stratify_param = None
+    try:
+        return train_test_split(X_df, y_arr, test_size=test_size, random_state=random_state, stratify=stratify_param)
+    except ValueError as e:
+        st.warning(f"train_test_split with stratify failed: {e}. Retrying without stratify.")
+        return train_test_split(X_df, y_arr, test_size=test_size, random_state=random_state, stratify=None)
 
 if task in ("classification", "regression"):
     if y is None or len(y) == 0:
         st.error("No target values available after preprocessing — cannot train.")
         st.stop()
     X_train, X_test, y_train, y_test = safe_train_test_split(X, y, test_size, random_state, task)
-    st.write(f"Train shape: {X_train.shape} — Test shape: {X_test.shape}")
+    st.write(f"Train shape: {X_train.shape} - Test shape: {X_test.shape}")
 else:
     X_train = X_test = y_train = y_test = None
 
 # -------------------------
-# Modeling & evaluation
+# Modeling - Train & Evaluate
 # -------------------------
-st.header("Model training & evaluation")
+st.header("Model Training and Evaluation")
+
 if task == "classification":
-    unique_classes = np.unique(y_train) if y_train is not None else []
-    if y_train is None or len(unique_classes) < 2:
+    if y_train is None or len(np.unique(y_train)) < 2:
         st.error("Classification requires at least 2 classes with enough samples.")
     else:
-        # Define classifiers
         classifiers = {
             "Random Forest": RandomForestClassifier(random_state=random_state),
             "Decision Tree": DecisionTreeClassifier(random_state=random_state),
-            "Logistic Regression": LogisticRegression(max_iter=1000, solver="lbfgs")
+            "Logistic Regression": LogisticRegression(max_iter=500)
         }
-        metrics = {}
-        for name, clf in classifiers.items():
+        results = {}
+        for name, model in classifiers.items():
             try:
-                if has_nan_or_inf(X_train.values) or has_nan_or_inf(np.asarray(y_train)):
-                    raise ValueError("Training data contains NaN/inf. Ensure imputation.")
-                clf.fit(X_train, y_train)
-                y_pred = clf.predict(X_test)
-                metrics[name] = {
-                    "Accuracy": float(accuracy_score(y_test, y_pred)),
-                    "Precision": float(precision_score(y_test, y_pred, average="macro", zero_division=0)),
-                    "Recall": float(recall_score(y_test, y_pred, average="macro", zero_division=0)),
-                    "F1": float(f1_score(y_test, y_pred, average="macro", zero_division=0))
-                }
-            except Exception as e:
-                metrics[name] = {"error": str(e)}
-        st.subheader("Classification results (test set)")
-        st.table(pd.DataFrame(metrics).T)
-
-        # show confusion matrix for best model
-        valid = {k: v for k, v in metrics.items() if "F1" in v}
-        if valid:
-            best = max(valid.items(), key=lambda t: t[1]["F1"])[0]
-            st.write(f"Best model by F1: {best}")
-            try:
-                model = classifiers[best]
+                if has_nan_or_inf(X_train.values) or has_nan_or_inf(y_train):
+                    raise ValueError("Training data contains NaN/Inf. Please impute or remove missing values.")
+                model.fit(X_train, y_train)
                 y_pred = model.predict(X_test)
+                results[name] = {
+                    "Accuracy": accuracy_score(y_test, y_pred),
+                    "Precision": precision_score(y_test, y_pred, average="macro", zero_division=0),
+                    "Recall": recall_score(y_test, y_pred, average="macro", zero_division=0),
+                    "F1 Score": f1_score(y_test, y_pred, average="macro", zero_division=0)
+                }
+            except Exception as exc:
+                results[name] = {"error": str(exc)}
+        st.table(pd.DataFrame(results).T)
+
+        # Best model by F1 (if available)
+        scored = {k: v for k, v in results.items() if "F1 Score" in v}
+        if scored:
+            best = max(scored.items(), key=lambda kv: kv[1]["F1 Score"])[0]
+            st.write(f"Best model by F1 score: {best}")
+            try:
+                best_model = classifiers[best]
+                y_pred = best_model.predict(X_test)
                 cm = confusion_matrix(y_test, y_pred)
-                fig, ax = plt.subplots(figsize=(6, 4))
+                fig, ax = plt.subplots()
                 sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
                 ax.set_title(f"Confusion Matrix — {best}")
                 ax.set_xlabel("Predicted")
@@ -359,21 +463,21 @@ if task == "classification":
                 st.pyplot(fig)
                 st.text("Classification report:")
                 st.text(classification_report(y_test, y_pred, zero_division=0))
-            except Exception as e:
-                st.warning(f"Could not display confusion matrix: {e}")
+            except Exception as exc:
+                st.warning(f"Could not show confusion matrix / report: {exc}")
 
 elif task == "regression":
     if y_train is None:
-        st.error("Regression requires a numeric target.")
+        st.error("Regression requires a numeric target column.")
     else:
-        # Impute if necessary
+        # Impute/clean if necessary
         if has_nan_or_inf(X_train.values):
-            st.warning("Imputing NaNs in features before training.")
-            imputer = SimpleImputer(strategy=impute_strategy)
-            X_train = pd.DataFrame(imputer.fit_transform(X_train), columns=X_train.columns, index=X_train.index)
-            X_test = pd.DataFrame(imputer.transform(X_test), columns=X_test.columns, index=X_test.index)
+            st.warning("Detected NaNs/Infs in features. Applying imputation.")
+            imp = SimpleImputer(strategy=impute_strategy)
+            X_train = pd.DataFrame(imp.fit_transform(X_train), columns=X_train.columns, index=X_train.index)
+            X_test = pd.DataFrame(imp.transform(X_test), columns=X_test.columns, index=X_test.index)
         if np.isnan(y_train).any():
-            st.warning("Dropping rows with NaN in target for training.")
+            st.warning("Dropping rows with NaN target values in training set.")
             mask = ~np.isnan(y_train)
             X_train = X_train.loc[mask]
             y_train = y_train[mask]
@@ -383,66 +487,65 @@ elif task == "regression":
             "Decision Tree Regressor": DecisionTreeRegressor(random_state=random_state),
             "Linear Regression": LinearRegression()
         }
-        metrics = {}
-        for name, reg in regressors.items():
+        results = {}
+        for name, model in regressors.items():
             try:
                 if X_train.shape[0] < 2:
-                    raise ValueError("Not enough training samples for regression.")
-                reg.fit(X_train, y_train)
-                y_pred = reg.predict(X_test)
-                metrics[name] = {
-                    "R2": float(r2_score(y_test, y_pred)),
-                    "MAE": float(mean_absolute_error(y_test, y_pred)),
-                    "MSE": float(mean_squared_error(y_test, y_pred))
+                    raise ValueError("Not enough training samples.")
+                if has_nan_or_inf(X_train.values) or np.isnan(y_train).any():
+                    raise ValueError("Training data contains NaN/Inf.")
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_test)
+                results[name] = {
+                    "R2": r2_score(y_test, y_pred),
+                    "MAE": mean_absolute_error(y_test, y_pred),
+                    "MSE": mean_squared_error(y_test, y_pred)
                 }
-            except Exception as e:
-                metrics[name] = {"error": str(e)}
-        st.subheader("Regression results (test set)")
-        st.table(pd.DataFrame(metrics).T)
+            except Exception as exc:
+                results[name] = {"error": str(exc)}
+        st.table(pd.DataFrame(results).T)
 
 elif task == "clustering":
     st.subheader("Clustering (unsupervised)")
-    max_k = max(2, min(10, X.shape[0] - 1)) if X.shape[0] > 2 else 2
-    n_clusters = st.sidebar.slider("Number of clusters (k)", min_value=2, max_value=max_k, value=min(3, max_k))
+    k_default = 3 if X.shape[0] >= 3 else max(2, X.shape[0])
+    n_clusters = st.sidebar.slider("Number of clusters (k)", 2, max(2, min(10, X.shape[0])), value=k_default, step=1)
     try:
-        kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
-        labels = kmeans.fit_predict(X)
+        km = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
+        labels = km.fit_predict(X)
         st.write("Cluster counts:", pd.Series(labels).value_counts().to_dict())
-        if X.shape[1] >= 2 and X.shape[0] >= n_clusters:
+        if X.shape[1] >= 2:
             try:
                 sil = silhouette_score(X, labels)
-                st.write(f"Silhouette score: {sil:.4f}")
-            except Exception as e:
-                st.warning(f"Could not compute silhouette score: {e}")
-            fig, ax = plt.subplots(figsize=(7, 5))
-            ax.scatter(X.iloc[:, 0], X.iloc[:, 1], c=labels, cmap="tab10", alpha=0.8)
+                st.write(f"Silhouette Score: {sil:.4f}")
+            except Exception:
+                st.info("Could not compute silhouette score (maybe insufficient data).")
+            fig, ax = plt.subplots()
+            ax.scatter(X.iloc[:, 0], X.iloc[:, 1], c=labels, cmap="tab10", alpha=0.7)
             ax.set_xlabel(X.columns[0])
             ax.set_ylabel(X.columns[1])
             st.pyplot(fig)
-        else:
-            st.info("Not enough dimensions or samples for scatter plot.")
-    except Exception as e:
-        st.error(f"Clustering failed: {e}")
+    except Exception as exc:
+        st.error(f"Clustering failed: {exc}")
+        st.exception(exc)
 
 # -------------------------
 # Cross-validation
 # -------------------------
-st.header("Cross-validation")
-requested_splits = int(st.sidebar.number_input("K-Fold splits", min_value=2, max_value=20, value=5))
+st.header("Cross-validation (K-Fold)")
+requested_splits = int(st.sidebar.number_input("K-Fold splits", min_value=2, max_value=20, value=5, step=1))
 cv_results = {}
 
 if task in ("classification", "regression") and y is not None:
-    # Prepare X_cv, y_cv: impute X if needed, drop NaN targets
-    if has_nan_or_inf(X.values) or np.isnan(y).any():
-        st.warning("Imputing remaining NaNs in features and dropping NaNs in target before CV.")
-        imputer = SimpleImputer(strategy=impute_strategy)
-        X_cv = pd.DataFrame(imputer.fit_transform(X), columns=X.columns, index=X.index)
-        mask = ~np.isnan(y)
+    # Prepare X_cv, y_cv: impute features if necessary and drop NaN targets
+    X_cv = X.copy()
+    y_cv = np.asarray(y)
+    if has_nan_or_inf(X_cv.values) or np.isnan(y_cv).any():
+        st.warning("Imputing remaining NaNs in features and dropping NaN targets before CV.")
+        imp = SimpleImputer(strategy=impute_strategy)
+        X_cv = pd.DataFrame(imp.fit_transform(X_cv), columns=X_cv.columns, index=X_cv.index)
+        mask = ~np.isnan(y_cv)
         X_cv = X_cv.loc[mask]
-        y_cv = np.asarray(y)[mask]
-    else:
-        X_cv = X.copy()
-        y_cv = np.asarray(y)
+        y_cv = y_cv[mask]
 
     n_samples = X_cv.shape[0]
     if n_samples < 2:
@@ -460,36 +563,37 @@ if task in ("classification", "regression") and y is not None:
             if n_classes < 2:
                 cv_results = {"error": "Cross-validation requires at least 2 classes."}
             else:
+                # Prefer StratifiedKFold when possible
                 if min_count >= n_splits:
                     cv_strategy = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+                    st.info(f"Using StratifiedKFold with n_splits={n_splits}.")
                 else:
-                    # try reduce n_splits to min_count if possible
                     if min_count >= 2:
                         n_splits_reduced = min(n_splits, min_count)
                         cv_strategy = StratifiedKFold(n_splits=n_splits_reduced, shuffle=True, random_state=random_state)
-                        st.warning(f"Reduced n_splits to {n_splits_reduced} for stratification.")
+                        st.warning(f"Reduced n_splits to {n_splits_reduced} for stratification (min samples/class = {min_count}).")
                     else:
-                        n_splits_kfold = min(n_splits, max(2, n_samples // 2))
-                        cv_strategy = KFold(n_splits=n_splits_kfold, shuffle=True, random_state=random_state)
-                        st.warning("Using KFold (no stratification) due to very small class counts.")
+                        n_splits_kf = min(n_splits, max(2, n_samples // 2))
+                        cv_strategy = KFold(n_splits=n_splits_kf, shuffle=True, random_state=random_state)
+                        st.warning(f"Stratified CV not possible (min samples/class < 2). Falling back to KFold with n_splits={n_splits_kf}.")
 
                 models_for_cv = {
                     "Random Forest": RandomForestClassifier(random_state=random_state),
                     "Decision Tree": DecisionTreeClassifier(random_state=random_state),
-                    "Logistic Regression": LogisticRegression(max_iter=1000, solver="lbfgs")
+                    "Logistic Regression": LogisticRegression(max_iter=500)
                 }
                 for name, model in models_for_cv.items():
                     try:
                         scores = cross_val_score(model, X_cv, y_cv, cv=cv_strategy, scoring="accuracy")
                         cv_results[name] = {"mean_accuracy": float(scores.mean()), "std": float(scores.std())}
-                    except Exception as e:
-                        cv_results[name] = {"error": str(e)}
+                    except Exception as exc:
+                        cv_results[name] = {"error": str(exc)}
 
         else:  # regression
             n_splits_reg = min(n_splits, max(2, n_samples // 2))
             if n_splits_reg < 2:
                 n_splits_reg = 2
-            kfold = KFold(n_splits=n_splits_reg, shuffle=True, random_state=random_state)
+            kf = KFold(n_splits=n_splits_reg, shuffle=True, random_state=random_state)
             models_for_cv = {
                 "RF Regressor": RandomForestRegressor(random_state=random_state),
                 "DT Regressor": DecisionTreeRegressor(random_state=random_state),
@@ -497,63 +601,34 @@ if task in ("classification", "regression") and y is not None:
             }
             for name, model in models_for_cv.items():
                 try:
-                    scores = cross_val_score(model, X_cv, y_cv, cv=kfold, scoring="r2")
+                    scores = cross_val_score(model, X_cv, y_cv, cv=kf, scoring="r2")
                     cv_results[name] = {"mean_r2": float(scores.mean()), "std": float(scores.std())}
-                except Exception as e:
-                    cv_results[name] = {"error": str(e)}
+                except Exception as exc:
+                    cv_results[name] = {"error": str(exc)}
 else:
     cv_results = {"note": "Cross-validation not applicable for unsupervised task or missing target."}
 
+st.write("Cross-validation results:")
 st.write(cv_results)
 
 # -------------------------
-# Visualizations (improved readability)
+# Visualizations
 # -------------------------
 st.header("Visualizations")
-
-# 1) Distribution of a selected categorical column with aggregation for readability
-st.subheader("Categorical distribution (top categories aggregated)")
-cat_col = st.selectbox("Select a categorical column to display", options=[c for c in df.columns if df[c].dtype == "object" or df[c].dtype.name.startswith("category")] + [""])
-if cat_col:
-    top_n = st.slider("Top N categories to show (others -> Other)", min_value=5, max_value=50, value=15)
-    series = df[cat_col].fillna("NaN").astype(str)
-    agg = aggregate_small_categories(series, top_n=top_n)
-    # horizontal bar chart
-    fig, ax = plt.subplots(figsize=(8, min(6, 0.25 * len(agg))))
-    agg.sort_values().plot(kind="barh", ax=ax, color=sns.color_palette("tab10", n_colors=len(agg)))
-    ax.set_xlabel("Count")
-    ax.set_ylabel(cat_col)
-    ax.set_title(f"{cat_col} distribution (top {top_n})")
-    for i, v in enumerate(agg.sort_values()):
-        ax.text(v + max(agg.max()*0.01, 1e-6), i, str(int(v)), va="center")
-    st.pyplot(fig)
-
-# 2) Risk_Level if present (improved)
 if "Risk_Level" in df.columns:
-    st.subheader("Risk_Level distribution (improved)")
-    rl = df["Risk_Level"].fillna("NaN").astype(str)
-    agg_rl = aggregate_small_categories(rl, top_n=20)
-    fig, ax = plt.subplots(figsize=(8, max(3, 0.25 * len(agg_rl))))
-    agg_rl.sort_values().plot(kind="barh", ax=ax, color="salmon")
-    ax.set_xlabel("Count")
-    ax.set_ylabel("Risk_Level")
+    fig, ax = plt.subplots()
+    df["Risk_Level"].value_counts().plot(kind="bar", ax=ax)
     ax.set_title("Risk_Level distribution")
     st.pyplot(fig)
 
-# 3) Pairplot (numeric features only) capped to avoid clutter
-st.subheader("Pairplot (numeric features subset)")
-numeric_cols = [c for c in X.columns]
-if numeric_cols:
-    max_features = st.number_input("Max numeric features to include in pairplot", min_value=2, max_value=8, value=min(6, len(numeric_cols)))
-    sel = numeric_cols[:int(max_features)]
+if X.shape[1] <= 6:
     try:
-        sample_n = min(len(X), 300)
-        df_pair = pd.DataFrame(X[sel]).sample(n=sample_n, random_state=42)
-        sns_plot = sns.pairplot(df_pair, corner=True, plot_kws={"s": 20, "alpha": 0.6})
+        temp = X.copy()
+        if y is not None:
+            temp["_target"] = y
+        sns_plot = sns.pairplot(temp.sample(n=min(len(temp), 200)))
         st.pyplot(sns_plot.fig)
-    except Exception as e:
-        st.warning(f"Could not create pairplot: {e}")
-else:
-    st.info("No numeric features available for pairplot.")
+    except Exception as exc:
+        st.warning(f"Could not generate pairplot: {exc}")
 
-st.success("Finished. Visualizations are aggregated and rotated to improve readability for long/crowded labels.")
+st.success("Processing complete. See sidebar for options to re-run with different settings.")
