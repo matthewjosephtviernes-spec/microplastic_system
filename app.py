@@ -21,7 +21,7 @@ from sklearn.metrics import (
 from sklearn.metrics import silhouette_score
 
 st.set_page_config(page_title="Microplastic Risk Prediction System (robust)", layout="wide")
-st.title("Microplastic Risk Prediction System — Robust data handling")
+st.title("Microplastic Risk Prediction System")
 
 # -------------------------
 # Helpers
@@ -515,3 +515,4 @@ if X.shape[1] <= 6:
         st.warning(f"Could not create pairplot: {e}")
 
 st.success("Processing finished. Cross-validation selection now adapts to small/imbalanced class counts and falls back safely when stratified CV isn't possible.")
+
