@@ -14,7 +14,7 @@ st.title("Microplastic Risk Prediction System")
 # ========================================================
 @st.cache_data
 def load_data():
-    url = "https://github.com/matthewjosephtviernes-spec/microplastic_system/blob/main/data/Data1_Microplastic.csv"
+    url = "https://raw.githubusercontent.com/matthewjosephtviernes-spec/microplastic_system/main/data/Data1_Microplastic.csv"
     data = pd.read_csv(url, encoding='utf-8', sep=',', on_bad_lines='skip')
     return data
 
@@ -26,7 +26,17 @@ st.dataframe(df)
 df = df.dropna()
 st.write("✅ Data cleaned: Missing values removed")
 
-# Encode your columns here later (Risk_Level etc.)
+# Create Risk Level Column based on MP Count
+def assign_risk_level(count):
+    if count <= 1:
+        return "Low"
+    elif count <= 3:
+        return "Medium"
+    else:
+        return "High"
+
+df["Risk_Level"] = df["MP_Count (items/individual)"].apply(assign_risk_level)
+st.write("✅ Risk_Level column created")
 
 
 # ========================================================
@@ -34,7 +44,7 @@ st.write("✅ Data cleaned: Missing values removed")
 # ========================================================
 st.header("⚙️ Model Training and Evaluation")
 
-X = df.drop("Risk_Level", axis=1)
+X = df.drop(["Risk_Level"], axis=1)
 y = df["Risk_Level"]
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
@@ -83,5 +93,6 @@ plt.figure(figsize=(6,4))
 df["Risk_Level"].value_counts().plot(kind='bar')
 plt.title("Distribution of Risk Levels")
 st.pyplot()
+
 
 
