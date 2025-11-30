@@ -13,15 +13,19 @@ from sklearn.base import clone
 sns.set_style("whitegrid")
 
 st.set_page_config(page_title="Microplastic Risk Dashboard", page_icon="🧪", layout="wide")
-st.title("🧪 Microplastic Risk Analysis — Enhanced Interactive Dashboard")
+st.title("🧪 Microplastic Risk Analysis — Predictive Risk Modeling Dashboard")
 
+# -----------------------------
+# Sidebar navigation
+# -----------------------------
 st.sidebar.title("Navigation")
 tabs = [
-    "1. Upload & Preview",
+    "Overview / About the Study",
+    "1. Data Upload & Description",
     "2. Data Preprocessing",
-    "3. Preprocessed Results",
-    "4. Modeling & Performance",
-    "5. Visualizations"
+    "3. Preprocessed Data Results",
+    "4. Predictive Modeling & Validation",
+    "5. Risk Visualizations & Interpretation",
 ]
 selected_tab = st.sidebar.radio("Go to step:", tabs)
 
@@ -42,7 +46,7 @@ def show_step_indicator(current_step_index: int, tabs_list):
             else:
                 icon = "⚪"
             st.markdown(
-                f"<div style='text-align:center'>{icon}<br/><span style='font-size:0.8rem'>{label}</span></div>",
+                f"<div style='text-align:center'>{icon}<br/><span style='font-size:0.75rem'>{label}</span></div>",
                 unsafe_allow_html=True,
             )
     st.markdown("---")  # visual separator before main content
@@ -60,8 +64,18 @@ if "preprocessed" not in st.session_state:
 
 # Expected columns
 num_cols = ["MP_Count_per_L", "Risk_Score", "Microplastic_Size_mm_midpoint", "Density_midpoint"]
-cat_cols = ["Location", "Shape", "Polymer_Type", "pH", "Salinity", "Industrial_Activity",
-            "Population_Density", "Risk_Type", "Risk_Level", "Author"]
+cat_cols = [
+    "Location",
+    "Shape",
+    "Polymer_Type",
+    "pH",
+    "Salinity",
+    "Industrial_Activity",
+    "Population_Density",
+    "Risk_Type",
+    "Risk_Level",
+    "Author",
+]
 
 
 # -----------------------------
@@ -94,31 +108,82 @@ def plot_value_counts_bar(df_counts, x_col=None, y_col="count", title="Value Cou
 
 
 # -----------------------------
-# 1. Upload & Preview
+# 0. Overview / About the Study
 # -----------------------------
 if selected_tab == tabs[0]:
     show_step_indicator(0, tabs)
-    st.header("Step 1: Upload Your Dataset")
+    st.header("Overview / About the Study")
+
     st.markdown(
         """
-        Upload your microplastic dataset in CSV or Excel format.
-        After uploading, you’ll see a preview and can proceed to **Step 2: Data Preprocessing**.
+        This interactive dashboard implements the proposed **predictive risk modeling framework**
+        for **microplastic pollution**.
+
+        ### General Objective
+        > To develop a predictive risk modeling framework for microplastic pollution using data mining techniques.
+
+        ### How this app is structured (aligned with your thesis):
+        1. **Data Upload & Description** – Load the structured microplastic risk dataset derived from literature.  
+        2. **Data Preprocessing** – Clean, transform, and encode the data (KDD preprocessing stage).  
+        3. **Preprocessed Data Results** – Show what a *model-ready* dataset looks like.  
+        4. **Predictive Modeling & Validation** – Train classification models and validate them with cross-validation.  
+        5. **Risk Visualizations & Interpretation** – Visualize risk scores, categories, and distributions.
+
+        You can use screenshots from each step in your thesis for the **System Design**, **Methodology**, 
+        and **Results & Discussion** chapters.
         """
     )
-    uploaded_file = st.file_uploader("Upload CSV or Excel Dataset", type=["csv", "xlsx"])
+
+    st.info(
+        "Start the workflow by going to **'1. Data Upload & Description'** in the sidebar. "
+        "Each subsequent step depends on the previous one."
+    )
+
+
+# -----------------------------
+# 1. Data Upload & Description
+# -----------------------------
+elif selected_tab == tabs[1]:
+    show_step_indicator(1, tabs)
+    st.header("Step 1 – Data Upload & Description")
+
+    st.markdown(
+        """
+        In this step, you upload the **structured dataset** of microplastic pollution risk.
+        This dataset is assumed to be the result of your **text mining / literature review** phase
+        (extraction of risk information from journal articles and reports).
+
+        Accepted formats: **CSV** or **Excel (.xlsx)**.
+        """
+    )
+
+    uploaded_file = st.file_uploader("Upload your microplastic risk dataset", type=["csv", "xlsx"])
     if uploaded_file:
         try:
             if uploaded_file.name.endswith(".csv"):
                 raw_df = pd.read_csv(uploaded_file, encoding="latin1")
             else:
                 raw_df = pd.read_excel(uploaded_file)
-            # Keep raw copy in session and initialize df
+
+            # Keep raw copy in session and initialize working df
             st.session_state.raw_df = raw_df.copy()
             st.session_state.df = raw_df.copy()
             st.session_state.preprocessed = False
-            st.success("✅ Dataset uploaded successfully! Preview below:")
 
-            st.subheader("Dataset Preview (First 10 Rows)")
+            st.success("✅ Dataset uploaded successfully!")
+
+            # Basic description
+            st.subheader("Dataset Description")
+            rows, cols = raw_df.shape
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Rows:** {rows}")
+                st.write(f"**Columns:** {cols}")
+            with col2:
+                st.write("**Column names:**")
+                st.write(list(raw_df.columns))
+
+            st.subheader("Preview (First 10 Rows)")
             st.dataframe(raw_df.head(10), use_container_width=True)
 
             st.markdown(
@@ -128,7 +193,10 @@ if selected_tab == tabs[0]:
             st.dataframe(raw_df, use_container_width=True)
             st.markdown("</details>", unsafe_allow_html=True)
 
-            st.info("Next: go to **2. Data Preprocessing** in the sidebar to clean and transform the data.")
+            st.info(
+                "Next, go to **'2. Data Preprocessing'** to clean and transform the dataset "
+                "for predictive modeling."
+            )
         except Exception as e:
             st.error(f"Failed to read the uploaded file: {e}")
 
@@ -136,31 +204,33 @@ if selected_tab == tabs[0]:
 # -----------------------------
 # 2. Data Preprocessing
 # -----------------------------
-elif selected_tab == tabs[1]:
-    show_step_indicator(1, tabs)
-    st.header("Step 2: Data Preprocessing")
+elif selected_tab == tabs[2]:
+    show_step_indicator(2, tabs)
+    st.header("Step 2 – Data Preprocessing")
+
     st.markdown(
         """
-        In this step, the app will:
-        - Convert numeric columns to numeric types  
-        - Handle missing values and outliers  
-        - Optionally apply log transforms for strongly skewed distributions  
-        - Encode categorical variables  
-        - Scale numerical features  
+        This step prepares your dataset for machine learning by:
 
-        After this, your dataset becomes *machine-learning ready*.
+        - Converting numeric columns to proper numeric types  
+        - Handling missing values and outliers (IQR-based clipping)  
+        - Applying log transforms for strongly skewed numeric features  
+        - Encoding categorical variables into integer labels  
+        - Standardizing numerical features (mean ≈ 0, std ≈ 1)  
+
+        After this, the dataset becomes **model-ready**.
         """
     )
 
     df = st.session_state.df
     if df is None:
-        st.warning("⚠️ Please upload a dataset in Step 1 first.")
+        st.warning("⚠️ Please upload a dataset first in **Step 1 – Data Upload & Description**.")
         st.stop()
 
     df_prep = df.copy()
     outlier_report = []
 
-    # Numeric conversions, outlier clipping and optional log transform for skew
+    # Numeric conversions, outlier clipping, optional log transform
     for col in num_cols:
         if col in df_prep.columns:
             df_prep[col] = pd.to_numeric(df_prep[col], errors="coerce")
@@ -214,19 +284,28 @@ elif selected_tab == tabs[1]:
     st.subheader("Preprocessed Dataset (First 10 Rows)")
     st.dataframe(df_prep.head(10), use_container_width=True)
 
-    st.markdown("---")
-    st.info("Proceed to **Step 3: Preprocessed Results** to inspect the final cleaned dataset.")
+    with st.expander("Preprocessing Log (Outliers & Transforms)"):
+        if outlier_report:
+            for line in outlier_report:
+                st.markdown(f"- {line}")
+        else:
+            st.write("No numeric columns from the expected list were found or processed.")
+
+    st.info(
+        "Proceed to **'3. Preprocessed Data Results'** to inspect the final cleaned and "
+        "model-ready dataset in more detail."
+    )
 
 
 # -----------------------------
-# 3. Preprocessed Results
+# 3. Preprocessed Data Results
 # -----------------------------
-elif selected_tab == tabs[2]:
-    show_step_indicator(2, tabs)
-    st.header("Step 3: Preprocessed Data Results")
+elif selected_tab == tabs[3]:
+    show_step_indicator(3, tabs)
+    st.header("Step 3 – Preprocessed Data Results")
 
     if st.session_state.df is None or st.session_state.preprocessed is False:
-        st.warning("⚠️ Please preprocess the data first.")
+        st.warning("⚠️ Please run preprocessing first in **Step 2 – Data Preprocessing**.")
         st.stop()
 
     df_prep = st.session_state.df
@@ -234,19 +313,17 @@ elif selected_tab == tabs[2]:
 
     st.markdown(
         """
-        The dataset is now **fully preprocessed** and ready for machine learning.
-        
-        ### ✔ What This Means:
-        - All numeric columns have been cleaned, clipped for outliers, and standardized  
-        - Strongly skewed numeric columns were log-transformed  
-        - Categorical variables are now encoded as integers  
-        - No invalid values remain  
+        This step summarizes the **final state of your preprocessed dataset**.  
+        It shows that the data is now:
+
+        - ✅ Numerically cleaned and standardized  
+        - ✅ Categorical variables encoded as integers  
+        - ✅ Free from invalid values and ready for modeling  
         """
     )
 
     # 1. Dataset Overview
     st.subheader("1. Dataset Overview After Preprocessing")
-
     n_rows, n_cols = df_prep.shape
     numeric_cols_present = df_prep.select_dtypes(include=[np.number]).columns.tolist()
     categorical_cols_present = [c for c in df_prep.columns if c not in numeric_cols_present]
@@ -256,26 +333,42 @@ elif selected_tab == tabs[2]:
     col2.metric("Columns", n_cols)
     col3.metric("Numeric Features", len(numeric_cols_present))
 
+    st.markdown("**Sample of final preprocessed data (first 20 rows):**")
     st.dataframe(df_prep.head(20), use_container_width=True)
 
     # 2. Numeric Summary
     st.subheader("2. Numeric Feature Summary")
     if numeric_cols_present:
+        st.markdown("Descriptive statistics for all numeric features:")
         st.dataframe(df_prep[numeric_cols_present].describe(), use_container_width=True)
+
+        # Single feature distribution
+        st.markdown("**Inspect distribution of a selected numeric feature:**")
+        selected_num = st.selectbox("Choose a numeric column:", numeric_cols_present)
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        sns.histplot(df_prep[selected_num].dropna(), kde=True, ax=axes[0], color="steelblue")
+        axes[0].set_title(f"{selected_num} – Histogram")
+        sns.boxplot(x=df_prep[selected_num], ax=axes[1], color="orange")
+        axes[1].set_title(f"{selected_num} – Boxplot")
+        st.pyplot(fig)
+        plt.close(fig)
     else:
-        st.info("No numeric columns found.")
+        st.info("No numeric columns found in the preprocessed dataset.")
 
     # 3. Encoded Categorical Summary
     st.subheader("3. Encoded Categorical Feature Summary")
-    for col in categorical_cols_present:
-        vc = get_value_counts_for_column(df_prep, col)
-        with st.expander(f"Distribution for {col}"):
-            st.dataframe(vc, use_container_width=True)
-            plot_value_counts_bar(vc, x_col=col, title=f"{col} Encoded Distribution")
+    if categorical_cols_present:
+        for col in categorical_cols_present:
+            vc = get_value_counts_for_column(df_prep, col)
+            with st.expander(f"Distribution for {col}"):
+                st.dataframe(vc, use_container_width=True)
+                plot_value_counts_bar(vc, x_col=col, title=f"{col} Encoded Distribution")
+    else:
+        st.info("No categorical/encoded columns found.")
 
     # 4. Missing Value Check
     st.subheader("4. Missing Value Assessment")
-    total_missing = df_prep.isna().sum().sum()
+    total_missing = int(df_prep.isna().sum().sum())
     if total_missing == 0:
         st.success("No missing values detected. Data is fully ready for modeling.")
     else:
@@ -283,24 +376,42 @@ elif selected_tab == tabs[2]:
         st.dataframe(df_prep.isna().sum().to_frame("missing_count"))
 
     st.markdown("---")
-    st.info("Proceed to **Step 4: Modeling & Performance** to train classification models.")
+    st.info(
+        "Next, go to **'4. Predictive Modeling & Validation'** to build and validate "
+        "classification models on this dataset."
+    )
 
 
 # -----------------------------
-# 4. Modeling & Performance
+# 4. Predictive Modeling & Validation
 # -----------------------------
-elif selected_tab == tabs[3]:
-    show_step_indicator(3, tabs)
-    st.header("Step 4: Modeling & Performance")
+elif selected_tab == tabs[4]:
+    show_step_indicator(4, tabs)
+    st.header("Step 4 – Predictive Modeling & Validation")
 
     df = st.session_state.df
     if df is None or st.session_state.preprocessed is False:
-        st.warning("⚠️ Please preprocess the data first.")
+        st.warning("⚠️ Please complete preprocessing in **Step 2** first.")
         st.stop()
 
     if "Risk_Type" not in df.columns or "Risk_Level" not in df.columns:
-        st.warning("Required target columns 'Risk_Type' and 'Risk_Level' not found.")
+        st.warning("Required target columns 'Risk_Type' and 'Risk_Level' not found in the dataset.")
         st.stop()
+
+    st.markdown(
+        """
+        In this step, we train **classification models** to predict:
+
+        - **Risk_Type** (e.g., Ecological, Human health, etc.)  
+        - **Risk_Level** (e.g., Low, Medium, High)  
+
+        and we evaluate them using:
+
+        - Accuracy  
+        - Precision, Recall, F1-score (weighted)  
+        - K-Fold Cross Validation (for robustness and generalizability)  
+        """
+    )
 
     # Prepare data
     X = df.drop(columns=["Risk_Type", "Risk_Level"], errors="ignore")
@@ -317,6 +428,12 @@ elif selected_tab == tabs[3]:
         X, y_level, test_size=0.2, random_state=42
     )
 
+    st.subheader("Train–Test Split")
+    st.write(f"X_train shape: {X_train.shape}")
+    st.write(f"X_test shape: {X_test.shape}")
+    st.write(f"y_train_type length: {len(y_train_type)}")
+    st.write(f"y_test_type length: {len(y_test_type)}")
+
     # Define models
     models = {
         "Logistic Regression": LogisticRegression(max_iter=2000),
@@ -328,7 +445,7 @@ elif selected_tab == tabs[3]:
 
     for (model_name, model), tab_model in zip(models.items(), model_tabs):
         with tab_model:
-            st.subheader(model_name)
+            st.subheader(f"Model: {model_name}")
 
             # --- Risk_Type ---
             model_t = clone(model)
@@ -337,9 +454,18 @@ elif selected_tab == tabs[3]:
 
             st.markdown("### Performance on Risk_Type")
             st.write("Accuracy:", accuracy_score(y_test_type, pred_type))
-            st.write("Precision:", precision_score(y_test_type, pred_type, average="weighted", zero_division=0))
-            st.write("Recall:", recall_score(y_test_type, pred_type, average="weighted", zero_division=0))
-            st.write("F1 Score:", f1_score(y_test_type, pred_type, average="weighted", zero_division=0))
+            st.write(
+                "Precision:",
+                precision_score(y_test_type, pred_type, average="weighted", zero_division=0),
+            )
+            st.write(
+                "Recall:",
+                recall_score(y_test_type, pred_type, average="weighted", zero_division=0),
+            )
+            st.write(
+                "F1 Score:",
+                f1_score(y_test_type, pred_type, average="weighted", zero_division=0),
+            )
 
             # --- Risk_Level ---
             model_l = clone(model)
@@ -348,13 +474,23 @@ elif selected_tab == tabs[3]:
 
             st.markdown("### Performance on Risk_Level")
             st.write("Accuracy:", accuracy_score(y_test_level, pred_level))
-            st.write("Precision:", precision_score(y_test_level, pred_level, average="weighted", zero_division=0))
-            st.write("Recall:", recall_score(y_test_level, pred_level, average="weighted", zero_division=0))
-            st.write("F1 Score:", f1_score(y_test_level, pred_level, average="weighted", zero_division=0))
+            st.write(
+                "Precision:",
+                precision_score(y_test_level, pred_level, average="weighted", zero_division=0),
+            )
+            st.write(
+                "Recall:",
+                recall_score(y_test_level, pred_level, average="weighted", zero_division=0),
+            )
+            st.write(
+                "F1 Score:",
+                f1_score(y_test_level, pred_level, average="weighted", zero_division=0),
+            )
 
             # --- Cross Validation on Risk_Type ---
-            st.markdown("### 5-Fold Cross Validation (Risk_Type)")
+            st.markdown("### K-Fold Cross Validation (Risk_Type)")
             try:
+                # You can change n_splits to 10 if you want to match a 10-fold design
                 kf = KFold(n_splits=5, shuffle=True, random_state=42)
                 cv_scores = cross_val_score(clone(model), X, y_type, cv=kf, scoring="accuracy")
                 st.write(f"CV Scores: {cv_scores}")
@@ -363,26 +499,38 @@ elif selected_tab == tabs[3]:
             except Exception as e:
                 st.error(f"Cross-validation failed: {e}")
 
+    st.info(
+        "Use these metrics and model comparisons in the **Results & Discussion** section "
+        "to justify which algorithm is most suitable for microplastic risk prediction."
+    )
+
 
 # -----------------------------
-# 5. Visualizations
+# 5. Risk Visualizations & Interpretation
 # -----------------------------
-elif selected_tab == tabs[4]:
-    show_step_indicator(4, tabs)
-    st.header("Step 5: Visualizations & Data Interpretations")
+elif selected_tab == tabs[5]:
+    show_step_indicator(5, tabs)
+    st.header("Step 5 – Risk Visualizations & Interpretation")
 
     df = st.session_state.df
     if df is None or st.session_state.preprocessed is False:
-        st.warning("⚠️ Please preprocess the data first.")
+        st.warning("⚠️ Please preprocess the data first in **Step 2**.")
         st.stop()
 
-    st.markdown("Select a visualization from the sidebar.")
+    st.markdown(
+        """
+        This final step focuses on **visualizing risk patterns** that can be used in your
+        thesis **Results and Discussion** chapter.
+
+        Choose a visualization type from the sidebar.
+        """
+    )
 
     vis_options = [
         "Risk Score Distribution",
         "Risk Score vs MP_Count_per_L",
         "Risk Score by Risk Level",
-        "Class Distribution",
+        "Class Distribution (Risk_Type & Risk_Level)",
     ]
     vis_choice = st.sidebar.selectbox("Choose visualization:", vis_options)
 
@@ -391,6 +539,8 @@ elif selected_tab == tabs[4]:
         if "Risk_Score" in df.columns:
             fig, ax = plt.subplots()
             sns.histplot(df["Risk_Score"], kde=True, ax=ax)
+            ax.set_xlabel("Risk_Score")
+            ax.set_title("Distribution of Risk_Score")
             st.pyplot(fig)
             plt.close(fig)
         else:
@@ -400,25 +550,27 @@ elif selected_tab == tabs[4]:
         st.subheader("Risk Score vs MP_Count_per_L")
         if "Risk_Score" in df.columns and "MP_Count_per_L" in df.columns:
             fig, ax = plt.subplots()
-            ax.scatter(df["Risk_Score"], df["MP_Count_per_L"])
+            ax.scatter(df["Risk_Score"], df["MP_Count_per_L"], alpha=0.7)
             ax.set_xlabel("Risk_Score")
             ax.set_ylabel("MP_Count_per_L")
+            ax.set_title("Risk Score vs Microplastic Count per Liter")
             st.pyplot(fig)
             plt.close(fig)
         else:
-            st.warning("Required columns not found.")
+            st.warning("Required columns (Risk_Score, MP_Count_per_L) not found.")
 
     elif vis_choice == "Risk Score by Risk Level":
         st.subheader("Risk Score by Risk Level")
         if "Risk_Score" in df.columns and "Risk_Level" in df.columns:
             fig, ax = plt.subplots()
             sns.boxplot(x="Risk_Level", y="Risk_Score", data=df, ax=ax)
+            ax.set_title("Risk Score Distribution by Risk Level")
             st.pyplot(fig)
             plt.close(fig)
         else:
-            st.warning("Required columns not found.")
+            st.warning("Required columns (Risk_Score, Risk_Level) not found.")
 
-    elif vis_choice == "Class Distribution":
+    elif vis_choice == "Class Distribution (Risk_Type & Risk_Level)":
         st.subheader("Class Distributions")
         for target in ["Risk_Type", "Risk_Level"]:
             if target in df.columns:
