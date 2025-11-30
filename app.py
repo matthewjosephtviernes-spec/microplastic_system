@@ -59,12 +59,12 @@ cat_cols = ["Location", "Shape", "Polymer_Type", "pH", "Salinity", "Industrial_A
 
 # Helper functions
 def get_value_counts_for_column(df, column):
-    """Utility to get value counts as a DataFrame."""
-    if column in df.columns:
-        vc = df[column].value_counts(dropna=False)
-        return vc.reset_index().rename(columns={"index": column, column: "count"})
-    else:
+    """Return value counts as a clean DataFrame with unique column names."""
+    if column not in df.columns:
         return pd.DataFrame(columns=[column, "count"])
+    vc = df[column].value_counts(dropna=False)
+    # Build explicitly to avoid duplicate column names
+    return pd.DataFrame({column: vc.index, "count": vc.values})
 
 def plot_value_counts_bar(df_counts, x_col=None, y_col="count", title="Value Counts"):
     """Plot bar chart of value counts dataframe."""
@@ -158,7 +158,6 @@ elif selected_tab == tabs[1]:
                 upper = q3 + 1.5 * iqr
                 clipped_before = ((df_prep[col] < lower) | (df_prep[col] > upper)).sum()
                 df_prep[col] = df_prep[col].clip(lower=lower, upper=upper)
-                clipped_after = ((df_prep[col] < lower) | (df_prep[col] > upper)).sum()
                 skew_before = df_prep[col].skew()
                 transform_applied = False
                 if skew_before > 1:
@@ -261,7 +260,7 @@ elif selected_tab == tabs[2]:
     for col in categorical_cols:
         vc = get_value_counts_for_column(df_prep, col)
         with st.expander(f"Distribution for {col}"):
-            st.dataframe(vc)
+            st.dataframe(vc, use_container_width=True)
             plot_value_counts_bar(vc, x_col=col, title=f"{col} Encoded Distribution")
 
     # ---------------------------
@@ -382,25 +381,42 @@ elif selected_tab == tabs[4]:
 
     if vis_choice == "Risk Score Distribution":
         st.subheader("Risk Score Distribution")
-        fig, ax = plt.subplots()
-        sns.histplot(df["Risk_Score"], kde=True, ax=ax)
-        st.pyplot(fig)
+        if "Risk_Score" in df.columns:
+            fig, ax = plt.subplots()
+            sns.histplot(df["Risk_Score"], kde=True, ax=ax)
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.warning("Risk_Score column not found.")
 
     elif vis_choice == "Risk Score vs MP_Count_per_L":
         st.subheader("Risk Score vs MP_Count_per_L")
-        fig, ax = plt.subplots()
-        ax.scatter(df["Risk_Score"], df["MP_Count_per_L"])
-        st.pyplot(fig)
+        if "Risk_Score" in df.columns and "MP_Count_per_L" in df.columns:
+            fig, ax = plt.subplots()
+            ax.scatter(df["Risk_Score"], df["MP_Count_per_L"])
+            ax.set_xlabel("Risk_Score")
+            ax.set_ylabel("MP_Count_per_L")
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.warning("Required columns not found.")
 
     elif vis_choice == "Risk Score by Risk Level":
         st.subheader("Risk Score by Risk Level")
-        fig, ax = plt.subplots()
-        sns.boxplot(x="Risk_Level", y="Risk_Score", data=df, ax=ax)
-        st.pyplot(fig)
+        if "Risk_Score" in df.columns and "Risk_Level" in df.columns:
+            fig, ax = plt.subplots()
+            sns.boxplot(x="Risk_Level", y="Risk_Score", data=df, ax=ax)
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.warning("Required columns not found.")
 
     elif vis_choice == "Class Distribution":
         st.subheader("Class Distributions")
         for target in ["Risk_Type", "Risk_Level"]:
-            vc = df[target].value_counts()
-            st.write(f"### {target}")
-            st.bar_chart(vc)
+            if target in df.columns:
+                vc = df[target].value_counts()
+                st.write(f"### {target}")
+                st.bar_chart(vc)
+            else:
+                st.warning(f"{target} not found in dataset.")
