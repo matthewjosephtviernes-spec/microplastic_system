@@ -25,7 +25,10 @@ tabs = [
 ]
 selected_tab = st.sidebar.radio("Go to step:", tabs)
 
-# Step progress indicator for clarity
+
+# -----------------------------
+# Step progress indicator
+# -----------------------------
 def show_step_indicator(current_step_index: int, tabs_list):
     """Render a simple step-by-step progress indicator at the top of each page."""
     st.markdown("### Workflow Progress")
@@ -44,7 +47,10 @@ def show_step_indicator(current_step_index: int, tabs_list):
             )
     st.markdown("---")  # visual separator before main content
 
+
+# -----------------------------
 # Session state for data
+# -----------------------------
 if "df" not in st.session_state:
     st.session_state.df = None
 if "raw_df" not in st.session_state:
@@ -52,12 +58,15 @@ if "raw_df" not in st.session_state:
 if "preprocessed" not in st.session_state:
     st.session_state.preprocessed = False
 
-# Columns expected (used throughout)
+# Expected columns
 num_cols = ["MP_Count_per_L", "Risk_Score", "Microplastic_Size_mm_midpoint", "Density_midpoint"]
 cat_cols = ["Location", "Shape", "Polymer_Type", "pH", "Salinity", "Industrial_Activity",
             "Population_Density", "Risk_Type", "Risk_Level", "Author"]
 
+
+# -----------------------------
 # Helper functions
+# -----------------------------
 def get_value_counts_for_column(df, column):
     """Return value counts as a clean DataFrame with unique column names."""
     if column not in df.columns:
@@ -65,6 +74,7 @@ def get_value_counts_for_column(df, column):
     vc = df[column].value_counts(dropna=False)
     # Build explicitly to avoid duplicate column names
     return pd.DataFrame({column: vc.index, "count": vc.values})
+
 
 def plot_value_counts_bar(df_counts, x_col=None, y_col="count", title="Value Counts"):
     """Plot bar chart of value counts dataframe."""
@@ -82,6 +92,7 @@ def plot_value_counts_bar(df_counts, x_col=None, y_col="count", title="Value Cou
     st.pyplot(fig)
     plt.close(fig)
 
+
 # -----------------------------
 # 1. Upload & Preview
 # -----------------------------
@@ -97,26 +108,30 @@ if selected_tab == tabs[0]:
     uploaded_file = st.file_uploader("Upload CSV or Excel Dataset", type=["csv", "xlsx"])
     if uploaded_file:
         try:
-            if uploaded_file.name.endswith('.csv'):
-                raw_df = pd.read_csv(uploaded_file, encoding='latin1')
+            if uploaded_file.name.endswith(".csv"):
+                raw_df = pd.read_csv(uploaded_file, encoding="latin1")
             else:
                 raw_df = pd.read_excel(uploaded_file)
-            # keep raw copy in session and initialize df
+            # Keep raw copy in session and initialize df
             st.session_state.raw_df = raw_df.copy()
             st.session_state.df = raw_df.copy()
             st.session_state.preprocessed = False
             st.success("✅ Dataset uploaded successfully! Preview below:")
+
             st.subheader("Dataset Preview (First 10 Rows)")
             st.dataframe(raw_df.head(10), use_container_width=True)
+
             st.markdown(
                 "<details><summary style='font-weight:bold'>Show full uploaded dataset</summary>",
                 unsafe_allow_html=True,
             )
             st.dataframe(raw_df, use_container_width=True)
             st.markdown("</details>", unsafe_allow_html=True)
+
             st.info("Next: go to **2. Data Preprocessing** in the sidebar to clean and transform the data.")
         except Exception as e:
             st.error(f"Failed to read the uploaded file: {e}")
+
 
 # -----------------------------
 # 2. Data Preprocessing
@@ -148,7 +163,7 @@ elif selected_tab == tabs[1]:
     # Numeric conversions, outlier clipping and optional log transform for skew
     for col in num_cols:
         if col in df_prep.columns:
-            df_prep[col] = pd.to_numeric(df_prep[col], errors='coerce')
+            df_prep[col] = pd.to_numeric(df_prep[col], errors="coerce")
             nan_count = df_prep[col].isna().sum()
             if df_prep[col].notna().sum() > 0:
                 q1 = df_prep[col].quantile(0.25)
@@ -161,7 +176,7 @@ elif selected_tab == tabs[1]:
                 skew_before = df_prep[col].skew()
                 transform_applied = False
                 if skew_before > 1:
-                    # apply log1p transform if positive skew
+                    # Apply log1p transform if positive skew
                     df_prep[col] = np.where(
                         df_prep[col] > -1,
                         np.log1p(df_prep[col] - df_prep[col].min() + 1),
@@ -200,10 +215,11 @@ elif selected_tab == tabs[1]:
     st.dataframe(df_prep.head(10), use_container_width=True)
 
     st.markdown("---")
-    st.info("Proceed to Step 3 to view the full results of preprocessing.")
+    st.info("Proceed to **Step 3: Preprocessed Results** to inspect the final cleaned dataset.")
+
 
 # -----------------------------
-# 3. Preprocessed Results – final cleaned & modeling-ready dataset
+# 3. Preprocessed Results
 # -----------------------------
 elif selected_tab == tabs[2]:
     show_step_indicator(2, tabs)
@@ -228,44 +244,36 @@ elif selected_tab == tabs[2]:
         """
     )
 
-    # ---------------------------
     # 1. Dataset Overview
-    # ---------------------------
     st.subheader("1. Dataset Overview After Preprocessing")
 
     n_rows, n_cols = df_prep.shape
-    numeric_cols = df_prep.select_dtypes(include=[np.number]).columns.tolist()
-    categorical_cols = [c for c in df_prep.columns if c not in numeric_cols]
+    numeric_cols_present = df_prep.select_dtypes(include=[np.number]).columns.tolist()
+    categorical_cols_present = [c for c in df_prep.columns if c not in numeric_cols_present]
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Rows", n_rows)
     col2.metric("Columns", n_cols)
-    col3.metric("Numeric Features", len(numeric_cols))
+    col3.metric("Numeric Features", len(numeric_cols_present))
 
     st.dataframe(df_prep.head(20), use_container_width=True)
 
-    # ---------------------------
     # 2. Numeric Summary
-    # ---------------------------
     st.subheader("2. Numeric Feature Summary")
-    if numeric_cols:
-        st.dataframe(df_prep[numeric_cols].describe(), use_container_width=True)
+    if numeric_cols_present:
+        st.dataframe(df_prep[numeric_cols_present].describe(), use_container_width=True)
     else:
         st.info("No numeric columns found.")
 
-    # ---------------------------
     # 3. Encoded Categorical Summary
-    # ---------------------------
     st.subheader("3. Encoded Categorical Feature Summary")
-    for col in categorical_cols:
+    for col in categorical_cols_present:
         vc = get_value_counts_for_column(df_prep, col)
         with st.expander(f"Distribution for {col}"):
             st.dataframe(vc, use_container_width=True)
             plot_value_counts_bar(vc, x_col=col, title=f"{col} Encoded Distribution")
 
-    # ---------------------------
     # 4. Missing Value Check
-    # ---------------------------
     st.subheader("4. Missing Value Assessment")
     total_missing = df_prep.isna().sum().sum()
     if total_missing == 0:
@@ -276,6 +284,7 @@ elif selected_tab == tabs[2]:
 
     st.markdown("---")
     st.info("Proceed to **Step 4: Modeling & Performance** to train classification models.")
+
 
 # -----------------------------
 # 4. Modeling & Performance
@@ -290,7 +299,7 @@ elif selected_tab == tabs[3]:
         st.stop()
 
     if "Risk_Type" not in df.columns or "Risk_Level" not in df.columns:
-        st.warning("Required target columns not found.")
+        st.warning("Required target columns 'Risk_Type' and 'Risk_Level' not found.")
         st.stop()
 
     # Prepare data
@@ -300,7 +309,7 @@ elif selected_tab == tabs[3]:
 
     X = X.select_dtypes(include=[np.number]).fillna(0)
 
-    # Split
+    # Train/test split
     X_train, X_test, y_train_type, y_test_type = train_test_split(
         X, y_type, test_size=0.2, random_state=42
     )
@@ -308,21 +317,20 @@ elif selected_tab == tabs[3]:
         X, y_level, test_size=0.2, random_state=42
     )
 
-    # Models
+    # Define models
     models = {
         "Logistic Regression": LogisticRegression(max_iter=2000),
         "Random Forest": RandomForestClassifier(),
         "Gradient Boosting": GradientBoostingClassifier(),
     }
 
-    tabs_models = st.tabs(models.keys())
+    model_tabs = st.tabs(models.keys())
 
-    for (model_name, model), tab_model in zip(models.items(), tabs_models):
+    for (model_name, model), tab_model in zip(models.items(), model_tabs):
         with tab_model:
+            st.subheader(model_name)
 
-            st.subheader(f"{model_name}")
-
-            # Risk_Type
+            # --- Risk_Type ---
             model_t = clone(model)
             model_t.fit(X_train, y_train_type)
             pred_type = model_t.predict(X_test)
@@ -333,7 +341,7 @@ elif selected_tab == tabs[3]:
             st.write("Recall:", recall_score(y_test_type, pred_type, average="weighted", zero_division=0))
             st.write("F1 Score:", f1_score(y_test_type, pred_type, average="weighted", zero_division=0))
 
-            # Risk_Level
+            # --- Risk_Level ---
             model_l = clone(model)
             model_l.fit(X_train, y_train_level)
             pred_level = model_l.predict(X_test)
@@ -344,18 +352,17 @@ elif selected_tab == tabs[3]:
             st.write("Recall:", recall_score(y_test_level, pred_level, average="weighted", zero_division=0))
             st.write("F1 Score:", f1_score(y_test_level, pred_level, average="weighted", zero_division=0))
 
-            # Cross Validation
+            # --- Cross Validation on Risk_Type ---
             st.markdown("### 5-Fold Cross Validation (Risk_Type)")
             try:
                 kf = KFold(n_splits=5, shuffle=True, random_state=42)
                 cv_scores = cross_val_score(clone(model), X, y_type, cv=kf, scoring="accuracy")
-
                 st.write(f"CV Scores: {cv_scores}")
                 st.write(f"Mean CV accuracy: {cv_scores.mean():.3f} ± {cv_scores.std():.3f}")
-
                 st.bar_chart(cv_scores)
             except Exception as e:
                 st.error(f"Cross-validation failed: {e}")
+
 
 # -----------------------------
 # 5. Visualizations
