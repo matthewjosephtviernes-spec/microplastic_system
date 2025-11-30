@@ -163,7 +163,11 @@ elif selected_tab == tabs[1]:
                 transform_applied = False
                 if skew_before > 1:
                     # apply log1p transform if positive skew and values are >= -1
-                    df_prep[col] = np.where(df_prep[col] > -1, np.log1p(df_prep[col] - df_prep[col].min() + 1), df_prep[col])
+                    df_prep[col] = np.where(
+                        df_prep[col] > -1,
+                        np.log1p(df_prep[col] - df_prep[col].min() + 1),
+                        df_prep[col],
+                    )
                     transform_applied = True
                 outlier_report.append(
                     f"Column '{col}': NaNs={nan_count}, outliers clipped={clipped_before}, "
@@ -232,11 +236,24 @@ elif selected_tab == tabs[1]:
     st.info("Next: explore the cleaned data in **3. Preprocessed Results** and then proceed to **4. Modeling & Performance**.")
 
 # -----------------------------
-# 3. Preprocessed Results (separate navigation with distinct windows/tabs)
+# 3. Preprocessed Results – now with clear “what preprocessing did” view
 # -----------------------------
 elif selected_tab == tabs[2]:
     show_step_indicator(2, tabs)
     st.header("Step 3: Preprocessed Data Results")
+    st.markdown(
+        """
+        This step summarizes the **final state of your preprocessed dataset**.
+        After Step 2, your data should now be:
+        - ✅ Numerically cleaned (converted to numbers, outliers clipped, skew reduced where needed)
+        - ✅ Categorical variables encoded as integer labels
+        - ✅ Scaled / standardized for modeling
+        - ✅ Free from problematic values (invalid strings, infinities)
+
+        These results confirm that the dataset is **ready to be used in Step 4: Modeling & Performance**.
+        """
+    )
+
     if st.session_state.df is None or st.session_state.preprocessed is False:
         st.warning("⚠️ No preprocessed data available. Please run Data Preprocessing first.")
         st.stop()
@@ -244,150 +261,122 @@ elif selected_tab == tabs[2]:
     df_prep = st.session_state.df
     raw = st.session_state.raw_df if st.session_state.raw_df is not None else None
 
-    # Create tabs to separate each "window" for clearer dashboard
-    results_tabs = st.tabs([
-        "Overview",
-        "Numeric Summaries",
-        "Correlation & Pairwise",
-        "Categorical Summaries",
-        "Targets / Class Distribution",
-        "Download",
-    ])
+    # ---------------------------
+    # 1. Overall dataset overview
+    # ---------------------------
+    st.subheader("1. Dataset Overview (After Preprocessing)")
+    n_rows, n_cols = df_prep.shape
+    numeric_cols = df_prep.select_dtypes(include=[np.number]).columns.tolist()
+    categorical_cols = [c for c in df_prep.columns if c not in numeric_cols]
 
-    # Overview tab
-    with results_tabs[0]:
-        st.subheader("Overview")
-        col1, col2 = st.columns([2, 3])
-        with col1:
-            st.markdown("**Basic Information:**")
-            st.write(f"- Number of rows: {df_prep.shape[0]}")
-            st.write(f"- Number of columns: {df_prep.shape[1]}")
-            st.write("**Column names:**")
-            st.write(list(df_prep.columns))
-        with col2:
-            st.markdown("**Missing values per column:**")
-            missing = df_prep.isna().sum()
-            st.dataframe(missing.to_frame("missing_count").T)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Number of rows", n_rows)
+        st.metric("Number of columns", n_cols)
+    with col2:
+        st.metric("Numeric features", len(numeric_cols))
+        st.write(", ".join(numeric_cols) if numeric_cols else "None")
+    with col3:
+        st.metric("Categorical / encoded features", len(categorical_cols))
+        st.write(", ".join(categorical_cols) if categorical_cols else "None")
 
-        st.markdown("---")
-        st.markdown("**Sample of preprocessed data:**")
-        st.dataframe(df_prep.head(10), use_container_width=True)
+    st.markdown("**Column-wise summary:**")
+    info_df = pd.DataFrame({
+        "dtype": df_prep.dtypes.astype(str),
+        "non_null_count": df_prep.notna().sum(),
+        "missing_values": df_prep.isna().sum(),
+        "n_unique": df_prep.nunique()
+    })
+    st.dataframe(info_df, use_container_width=True)
 
-    # Numeric Summaries tab
-    with results_tabs[1]:
-        st.subheader("Numeric Summaries")
-        numeric_cols = df_prep.select_dtypes(include=[np.number]).columns.tolist()
-        if numeric_cols:
-            st.markdown("**Descriptive statistics for numeric columns:**")
-            st.dataframe(df_prep[numeric_cols].describe().T)
-            st.markdown("---")
-            st.markdown("**Distribution of a selected numeric variable:**")
-            selected_num = st.selectbox("Choose a numeric column:", numeric_cols)
-            fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-            sns.histplot(df_prep[selected_num].dropna(), kde=True, ax=axes[0], color="steelblue")
-            axes[0].set_title("Histogram")
-            sns.boxplot(x=df_prep[selected_num], ax=axes[1], color="orange")
-            axes[1].set_title("Boxplot")
-            st.pyplot(fig)
-            plt.close(fig)
+    # ---------------------------
+    # 2. Numeric feature diagnostics
+    # ---------------------------
+    st.subheader("2. Numeric Feature Diagnostics")
+    if numeric_cols:
+        st.markdown(
+            """
+            All numeric columns below have been:
+            - Converted to numeric data type  
+            - Clipped for extreme outliers using the IQR rule  
+            - Standardized (mean ≈ 0, standard deviation ≈ 1)  
+            - Optionally log-transformed if they were strongly skewed
+            """
+        )
+        desc = df_prep[numeric_cols].describe().T
+        st.dataframe(desc, use_container_width=True)
 
-            st.markdown("---")
-            st.markdown("You can also quickly inspect distributions of multiple numeric columns:")
-            cols_to_plot = st.multiselect("Select numeric columns for quick distributions:", numeric_cols, default=numeric_cols[:4])
-            if cols_to_plot:
-                n_plots = len(cols_to_plot)
-                rows = (n_plots + 2) // 3
-                fig, axes = plt.subplots(rows, 3, figsize=(15, 4 * rows))
-                axes = axes.flatten()
-                for i, col in enumerate(cols_to_plot):
-                    sns.histplot(df_prep[col].dropna(), kde=True, ax=axes[i], color="steelblue")
-                    axes[i].set_title(col)
-                for j in range(i + 1, len(axes)):
-                    axes[j].set_visible(False)
-                st.pyplot(fig)
-                plt.close(fig)
+        st.markdown("**Check a numeric feature distribution:**")
+        num_choice = st.selectbox("Select a numeric column:", numeric_cols)
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        sns.histplot(df_prep[num_choice].dropna(), kde=True, ax=axes[0], color="steelblue")
+        axes[0].set_title(f"{num_choice} — Histogram")
+        sns.boxplot(x=df_prep[num_choice], ax=axes[1], color="orange")
+        axes[1].set_title(f"{num_choice} — Boxplot")
+        st.pyplot(fig)
+        plt.close(fig)
+    else:
+        st.info("No numeric columns found in the preprocessed dataset.")
 
-    # Correlation & Distributions tab
-    with results_tabs[2]:
-        st.subheader("Correlation & Distributions")
-        numeric_cols = df_prep.select_dtypes(include=[np.number]).columns.tolist()
-        if numeric_cols:
-            st.markdown("Correlation matrix:")
-            corr = df_prep[numeric_cols].corr()
-            fig_corr, ax_corr = plt.subplots(figsize=(10, max(4, 0.3 * len(numeric_cols))))
-            sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", ax=ax_corr)
-            ax_corr.set_title("Correlation Matrix (numeric features)")
-            st.pyplot(fig_corr)
-            plt.close(fig_corr)
-            st.markdown("---")
-            st.markdown("Pairwise scatter (select two numeric features):")
-            pair_cols = st.multiselect(
-                "Choose two numeric columns:", numeric_cols, default=numeric_cols[:2] if len(numeric_cols) >= 2 else numeric_cols
-            )
-            if len(pair_cols) == 2:
-                fig_pair, ax_pair = plt.subplots(figsize=(6, 4))
-                ax_pair.scatter(df_prep[pair_cols[0]], df_prep[pair_cols[1]], alpha=0.7)
-                ax_pair.set_xlabel(pair_cols[0])
-                ax_pair.set_ylabel(pair_cols[1])
-                ax_pair.set_title(f"{pair_cols[0]} vs {pair_cols[1]}")
-                st.pyplot(fig_pair)
-                plt.close(fig_pair)
+    # ---------------------------
+    # 3. Categorical / encoded feature diagnostics
+    # ---------------------------
+    st.subheader("3. Categorical / Encoded Feature Diagnostics")
+    cat_present = [c for c in cat_cols if c in df_prep.columns]
+    if cat_present:
+        st.markdown(
+            """
+            The following columns were treated as **categorical** and encoded as integers.
+            Each distinct category has been assigned a numeric code.
+            """
+        )
+        st.write(", ".join(cat_present))
+
+        cat_choice = st.selectbox("Select a categorical/encoded column:", cat_present)
+        vc_encoded = get_value_counts_for_column(df_prep, cat_choice)
+        st.markdown("**Encoded value counts (after preprocessing):**")
+        st.dataframe(vc_encoded)
+
+        if raw is not None and cat_choice in raw.columns and len(raw) == len(df_prep):
+            st.markdown("**Approximate mapping from raw labels to encoded values (most frequent label per code):**")
+            temp = pd.DataFrame({
+                "raw": raw[cat_choice].astype(str),
+                "encoded": df_prep[cat_choice]
+            })
+            mapping = temp.groupby("encoded")["raw"].agg(lambda x: x.value_counts().idxmax())
+            mapping_df = mapping.reset_index().rename(columns={"encoded": "encoded_value", "raw": "most_common_raw_label"})
+            st.dataframe(mapping_df)
         else:
-            st.info("No numeric columns available for correlation analysis.")
+            st.info("Raw column not available or row counts differ; showing encoded distribution only.")
+    else:
+        st.info("No categorical/encoded columns from the expected list were found in the preprocessed dataset.")
 
-    # Categorical summaries tab
-    with results_tabs[3]:
-        st.subheader("Categorical Summaries")
-        cat_present = [col for col in cat_cols if col in df_prep.columns]
-        if cat_present:
-            cat_choice = st.selectbox("Select a categorical column:", cat_present)
-            vc = get_value_counts_for_column(df_prep, cat_choice)
-            st.markdown("**Value counts:**")
-            st.dataframe(vc)
-            plot_value_counts_bar(vc, x_col=cat_choice, title=f"Distribution of {cat_choice}")
-        else:
-            st.info("No categorical columns present in the preprocessed data.")
+    # ---------------------------
+    # 4. Missing values & readiness for modeling
+    # ---------------------------
+    st.subheader("4. Missing Values & Modeling Readiness")
+    total_missing = int(df_prep.isna().sum().sum())
+    if total_missing == 0:
+        st.success("✅ No missing values remain in the preprocessed dataset.")
+    else:
+        st.warning(f"⚠️ There are still {total_missing} missing values in the preprocessed dataset.")
+        st.dataframe(df_prep.isna().sum().to_frame("missing_per_column"))
 
-    # Targets / Class Distribution tab
-    with results_tabs[4]:
-        st.subheader("Targets / Class Distribution")
-        df = st.session_state.df
-        if df is None:
-            st.warning("No preprocessed data.")
-        else:
-            raw = st.session_state.raw_df if "raw_df" in st.session_state else None
-            for target in ["Risk_Type", "Risk_Level"]:
-                st.write(f"Target: {target}")
-                if raw is not None and target in raw.columns:
-                    vc_raw = get_value_counts_for_column(raw, target)
-                    st.markdown("Original (raw) label counts:")
-                    st.dataframe(vc_raw)
-                    plot_value_counts_bar(vc_raw, title=f"{target} (raw labels)")
-                elif target in df.columns:
-                    vc_prep = get_value_counts_for_column(df, target)
-                    st.markdown("Preprocessed label counts (may be encoded integers):")
-                    st.dataframe(vc_prep)
-                    plot_value_counts_bar(vc_prep, title=f"{target} (preprocessed)")
-                else:
-                    st.write(f"{target} not found in dataset.")
+    st.markdown(
+        """
+        ### ✅ Summary
 
-    # Download tab
-    with results_tabs[5]:
-        st.subheader("Download / Export")
-        st.markdown("Download the preprocessed dataset for further analysis.")
-        try:
-            csv = df_prep.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "Download preprocessed data (CSV)",
-                data=csv,
-                file_name="preprocessed_data.csv",
-                mime="text/csv",
-            )
-        except Exception:
-            st.warning("Download not supported in this environment.")
-        st.markdown("---")
-        st.markdown("You can also preview a cleaned sample (first 100 rows):")
-        st.dataframe(df_prep.head(100), use_container_width=True)
+        Your dataset is now **machine-learning ready**:
+        - All features are numeric or encoded as integers  
+        - Numeric features have been cleaned and scaled  
+        - Categorical variables have been encoded  
+        - The data can be directly passed to the models in **Step 4: Modeling & Performance**.
+        """
+    )
+
+    st.markdown("---")
+    st.markdown("**Sample of the final preprocessed data (first 20 rows):**")
+    st.dataframe(df_prep.head(20), use_container_width=True)
 
 # -----------------------------
 # 4. Modeling & Performance
@@ -520,7 +509,7 @@ elif selected_tab == tabs[3]:
                 kf = KFold(n_splits=5, shuffle=True, random_state=42)
                 cv_scores = cross_val_score(clone(model_objs[name]), X, y_type, cv=kf, scoring="accuracy")
                 st.write(f"CV scores: {cv_scores}")
-                st.write(f"Mean CV accuracy: {cv_scores.mean():.3f} ± {cv_scores.std():.3f}")
+                st.write(f"Mean CV accuracy: {cv_scores.mean():.3f} ± {cv_scores.std():{0.3f}}")
                 st.bar_chart(cv_scores)
             except Exception as e:
                 st.warning(f"Could not run cross-validation for {name}: {e}")
