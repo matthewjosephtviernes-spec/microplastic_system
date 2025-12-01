@@ -16,7 +16,7 @@ st.set_page_config(page_title="Microplastic Risk Dashboard", page_icon="🧪", l
 st.title("🧪 Microplastic Risk Data Mining & Forecasting")
 
 # =========================
-# GLOBAL STYLING – FULL GREEN THEME
+# GLOBAL STYLING – GREEN THEME + BOXED SIDEBAR NAV
 # =========================
 st.markdown(
     """
@@ -24,7 +24,6 @@ st.markdown(
     :root {
         --primary: #0da95c;
         --primary-dark: #0b7d44;
-        --primary-soft: #d9f7e3;
         --bg-main-top: #e2ffe9;
         --bg-main-bottom: #ffffff;
         --bg-sidebar-top: #06331f;
@@ -38,7 +37,7 @@ st.markdown(
         background: linear-gradient(135deg, var(--bg-main-top) 0%, #f7fff9 45%, var(--bg-main-bottom) 100%);
     }
 
-    /* SIDEBAR */
+    /* SIDEBAR BASE */
     [data-testid="stSidebar"] {
         background: linear-gradient(180deg, var(--bg-sidebar-top) 0%, var(--bg-sidebar-bottom) 50%, var(--bg-sidebar-top) 100%);
         color: #f0fff6;
@@ -46,9 +45,48 @@ st.markdown(
     }
     [data-testid="stSidebar"] * {
         color: #f0fff6 !important;
+        font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
-    /* GENERAL TYPOGRAPHY */
+    /* BOXED SIDEBAR RADIO NAVIGATION */
+    [data-testid="stSidebar"] div[role="radiogroup"] {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+    }
+
+    [data-testid="stSidebar"] div[role="radiogroup"] > label {
+        border-radius: 0.7rem;
+        border: 1px solid rgba(255,255,255,0.25);
+        background: rgba(0,0,0,0.18);
+        padding: 0.55rem 0.7rem;
+        display: flex !important;
+        align-items: center;
+        cursor: pointer;
+        transition: all 0.15s ease-in-out;
+        font-size: 0.86rem;
+        font-weight: 500;
+    }
+
+    [data-testid="stSidebar"] div[role="radiogroup"] > label:hover {
+        background: rgba(0,0,0,0.25);
+        border-color: rgba(255,255,255,0.45);
+        transform: translateX(2px);
+    }
+
+    [data-testid="stSidebar"] div[role="radiogroup"] > label[data-checked="true"] {
+        background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+        border-color: rgba(255,255,255,0.7);
+        box-shadow: 0 6px 14px rgba(0,0,0,0.35);
+        transform: translateX(2px);
+    }
+
+    /* Hide the default radio circle; keep text only inside box */
+    [data-testid="stSidebar"] div[role="radiogroup"] > label span:first-child {
+        display: none;
+    }
+
+    /* MAIN TEXT */
     h1, h2, h3, h4 {
         color: var(--text-dark);
         font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -65,24 +103,6 @@ st.markdown(
         box-shadow: 0 10px 24px rgba(0, 80, 40, 0.08);
         border: 1px solid rgba(7, 102, 61, 0.12);
         margin-bottom: 1.5rem;
-    }
-
-    /* (kept for future top-radio use; currently no radiogroup in main) */
-    section.main div[role="radiogroup"] > label {
-        display: inline-flex !important;
-        align-items: center;
-        justify-content: center;
-        padding: 0.45rem 1.3rem;
-        margin-right: 0.45rem;
-        margin-bottom: 0.35rem;
-        border-radius: 999px;
-        background: linear-gradient(135deg, #dcf9e5, #c7f3d6);
-        border: 1px solid #9ae7b2;
-        cursor: pointer;
-        font-weight: 600;
-        font-size: 0.9rem;
-        color: #064422 !important;
-        transition: all 0.15s ease-in-out;
     }
 
     /* BUTTONS */
@@ -104,8 +124,8 @@ st.markdown(
     /* FILE UPLOADER */
     [data-testid="stFileUploader"] > div {
         border-radius: 1rem;
-        border: 1.8px dashed rgba(255,255,255,0.7);
-        background: rgba(0,0,0,0.08);
+        border: 1.8px dashed rgba(0,128,0,0.35);
+        background: rgba(255,255,255,0.1);
     }
 
     /* METRICS */
@@ -166,28 +186,15 @@ tabs = [
 ]
 
 # =========================
-# SIDEBAR NAVIGATION + PROGRESS
+# SIDEBAR NAVIGATION (minimal, boxed)
 # =========================
-st.sidebar.markdown("## 📌 Workflow Steps")
+st.sidebar.markdown("## 📌 Workflow")
 selected_tab = st.sidebar.radio(
     "Navigate:",
     tabs,
     index=0,
+    label_visibility="collapsed",
 )
-
-current_step_index = tabs.index(selected_tab)
-
-# simple progress view (read-only icons)
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🧭 Progress")
-for i, label in enumerate(tabs):
-    if i < current_step_index:
-        icon = "✅"
-    elif i == current_step_index:
-        icon = "🟢"
-    else:
-        icon = "⚪"
-    st.sidebar.markdown(f"{icon} {label}")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Theme:** Green Gradient Microplastic Risk Dashboard")
@@ -275,7 +282,7 @@ if selected_tab == tabs[0]:
     )
 
     st.info(
-        "Begin with **'1. Data Upload & Description'** using the sidebar steps. "
+        "Begin with **'1. Data Upload & Description'** using the sidebar navigation. "
         "Each step builds on the previous one."
     )
     card_close()
@@ -496,7 +503,7 @@ elif selected_tab == tabs[3]:
         st.dataframe(df_prep.isna().sum().to_frame("missing_count"))
 
     st.info(
-        "Proceed to **'4. Predictive Modeling & Validation'** using the sidebar steps."
+        "Proceed to **'4. Predictive Modeling & Validation'** using the sidebar navigation."
     )
     card_close()
 
