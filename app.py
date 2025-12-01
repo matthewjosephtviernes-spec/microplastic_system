@@ -449,12 +449,24 @@ elif selected_tab == tabs[3]:
 
     df_prep = st.session_state.df
 
+    # 🔧 IMPORTANT FIX:
+    # Treat Latitude / Longitude / Microplastic_Size_mm / Density as NUMERIC,
+    # so they won't be plotted as crazy categorical bars with overlapping labels.
+    special_numeric = ["Latitude", "Longitude", "Microplastic_Size_mm", "Density"]
+    for col in special_numeric:
+        if col in df_prep.columns:
+            try:
+                df_prep[col] = pd.to_numeric(df_prep[col], errors="coerce")
+            except Exception:
+                pass
+
     st.markdown(
         """
         Verify that the **preprocessed dataset** is ready for modeling.
         """
     )
 
+    # 1. Dataset Overview
     st.subheader("1. Dataset Overview After Preprocessing")
     n_rows, n_cols = df_prep.shape
     numeric_cols_present = df_prep.select_dtypes(include=[np.number]).columns.tolist()
@@ -468,6 +480,7 @@ elif selected_tab == tabs[3]:
     st.markdown("**Sample of final preprocessed data (first 20 rows):**")
     st.dataframe(df_prep.head(20), use_container_width=True)
 
+    # 2. Numeric Summary (includes Latitude, Longitude, Microplastic_Size_mm, Density now)
     st.subheader("2. Numeric Feature Summary")
     if numeric_cols_present:
         st.dataframe(df_prep[numeric_cols_present].describe(), use_container_width=True)
@@ -484,16 +497,26 @@ elif selected_tab == tabs[3]:
     else:
         st.info("No numeric columns found in the preprocessed dataset.")
 
+    # 3. Encoded categorical summary (Latitude/Longitude/Size/Density already removed here)
     st.subheader("3. Encoded Categorical Feature Summary")
     if categorical_cols_present:
         for col in categorical_cols_present:
             vc = get_value_counts_for_column(df_prep, col)
             with st.expander(f"Distribution for {col}"):
                 st.dataframe(vc, use_container_width=True)
-                plot_value_counts_bar(vc, x_col=col, title=f"{col} Encoded Distribution")
+
+                # For columns with too many categories, only show top 20 to keep chart readable
+                if len(vc) > 20:
+                    vc_plot = vc.head(20)
+                    st.caption("Showing top 20 categories by frequency.")
+                else:
+                    vc_plot = vc
+
+                plot_value_counts_bar(vc_plot, x_col=col, title=f"{col} Encoded Distribution")
     else:
         st.info("No categorical/encoded columns found.")
 
+    # 4. Missing value check
     st.subheader("4. Missing Value Assessment")
     total_missing = int(df_prep.isna().sum().sum())
     if total_missing == 0:
