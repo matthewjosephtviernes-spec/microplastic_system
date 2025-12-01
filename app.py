@@ -16,42 +16,58 @@ st.set_page_config(page_title="Microplastic Risk Dashboard", page_icon="🧪", l
 st.title("🧪 Microplastic Risk Data Mining & Forecasting")
 
 # =========================
-# GLOBAL STYLING (GREEN THEME)
+# GLOBAL STYLING – FULL GREEN THEME
 # =========================
 st.markdown(
     """
     <style>
-    /* Main background: soft green gradient */
-    [data-testid="stAppViewContainer"] {
-        background: radial-gradient(circle at top left, #e5ffe8 0, #f7fff9 40%, #ffffff 100%);
+    :root {
+        --primary: #0da95c;
+        --primary-dark: #0b7d44;
+        --primary-soft: #d9f7e3;
+        --bg-main-top: #e2ffe9;
+        --bg-main-bottom: #ffffff;
+        --bg-sidebar-top: #06331f;
+        --bg-sidebar-bottom: #0f7b45;
+        --text-dark: #042513;
+        --text-muted: #476f5a;
     }
 
-    /* Sidebar background: darker green gradient */
+    /* MAIN BACKGROUND */
+    [data-testid="stAppViewContainer"] {
+        background: linear-gradient(135deg, var(--bg-main-top) 0%, #f7fff9 45%, var(--bg-main-bottom) 100%);
+    }
+
+    /* SIDEBAR */
     [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0b5330 0%, #0f7b45 50%, #0b5330 100%);
+        background: linear-gradient(180deg, var(--bg-sidebar-top) 0%, var(--bg-sidebar-bottom) 50%, var(--bg-sidebar-top) 100%);
         color: #f0fff6;
+        border-right: 1px solid rgba(255,255,255,0.15);
     }
     [data-testid="stSidebar"] * {
         color: #f0fff6 !important;
     }
 
-    /* Headings */
+    /* GENERAL TYPOGRAPHY */
     h1, h2, h3, h4 {
-        color: #06331c;
+        color: var(--text-dark);
+        font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body, p, li, span, div {
+        font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
 
-    /* Section cards */
+    /* SECTION CARDS */
     .section-card {
-        background: linear-gradient(135deg, #e7ffe9 0%, #f5fff7 50%, #ffffff 100%);
-        padding: 1.5rem 1.8rem;
+        background: radial-gradient(circle at top left, #ecfff2 0%, #f7fff9 45%, #ffffff 100%);
+        padding: 1.6rem 1.8rem;
         border-radius: 1.2rem;
-        box-shadow: 0 8px 20px rgba(0, 80, 40, 0.08);
-        border: 1px solid rgba(10, 100, 60, 0.12);
+        box-shadow: 0 14px 30px rgba(0, 80, 40, 0.08);
+        border: 1px solid rgba(7, 102, 61, 0.14);
         margin-bottom: 1.5rem;
     }
 
-    /* Top horizontal navigation styled as green pill buttons
-       Only target radios in the main content, not in the sidebar. */
+    /* TOP NAVIGATION – RADIO AS PILLS (MAIN ONLY) */
     section.main div[role="radiogroup"] > label {
         display: inline-flex !important;
         align-items: center;
@@ -60,31 +76,93 @@ st.markdown(
         margin-right: 0.45rem;
         margin-bottom: 0.35rem;
         border-radius: 999px;
-        background: linear-gradient(135deg, #d6f7dc, #c2f1cf);
-        border: 1px solid #7edb93;
+        background: linear-gradient(135deg, #dcf9e5, #c7f3d6);
+        border: 1px solid #9ae7b2;
         cursor: pointer;
         font-weight: 600;
         font-size: 0.9rem;
         color: #064422 !important;
+        transition: all 0.15s ease-in-out;
     }
-
     section.main div[role="radiogroup"] > label:hover {
-        background: linear-gradient(135deg, #c1f2cd, #a9ebba);
+        background: linear-gradient(135deg, #c5f3d3, #aceac0);
+        box-shadow: 0 4px 10px rgba(0, 80, 40, 0.18);
+        transform: translateY(-1px);
     }
-
     section.main div[role="radiogroup"] > label[data-checked="true"] {
-        background: linear-gradient(135deg, #0da95c, #0b7d44);
+        background: linear-gradient(135deg, var(--primary), var(--primary-dark));
         color: #ffffff !important;
-        border-color: #0b7d44;
-        box-shadow: 0 4px 10px rgba(0, 80, 40, 0.35);
+        border-color: var(--primary-dark);
+        box-shadow: 0 6px 14px rgba(0, 80, 40, 0.40);
+        transform: translateY(-1px);
     }
 
-    /* Metrics and small chips */
+    /* BUTTONS */
+    .stButton > button {
+        background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+        color: white;
+        border-radius: 999px;
+        border: none;
+        padding: 0.4rem 1.2rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        box-shadow: 0 6px 16px rgba(0, 80, 40, 0.35);
+    }
+    .stButton > button:hover {
+        filter: brightness(1.03);
+        transform: translateY(-1px);
+    }
+
+    /* FILE UPLOADER */
+    [data-testid="stFileUploader"] > div {
+        border-radius: 1rem;
+        border: 1.8px dashed rgba(255,255,255,0.7);
+        background: rgba(0,0,0,0.08);
+    }
+
+    /* SELECTBOX / INPUTS / SLIDERS */
+    .stSelectbox, .stMultiSelect, .stTextInput, .stNumberInput, .stDateInput {
+        border-radius: 0.6rem !important;
+    }
+    .stSelectbox > div, .stMultiSelect > div, .stTextInput > div, .stNumberInput > div {
+        border-radius: 0.6rem !important;
+    }
+
+    /* METRICS */
     .stMetric {
         background: linear-gradient(135deg, #e3ffe9, #f8fff9);
         border-radius: 0.9rem;
-        padding: 0.3rem 0.7rem;
-        box-shadow: 0 4px 10px rgba(0, 80, 40, 0.08);
+        padding: 0.25rem 0.65rem;
+        box-shadow: 0 4px 10px rgba(0, 80, 40, 0.09);
+    }
+
+    /* TABLES */
+    .stDataFrame, .stTable {
+        border-radius: 0.9rem;
+        overflow: hidden;
+        box-shadow: 0 10px 20px rgba(0, 80, 40, 0.04);
+    }
+
+    /* EXPANDERS */
+    details {
+        border-radius: 0.9rem;
+        border: 1px solid rgba(7, 102, 61, 0.18);
+        background: #f3fff7;
+        padding: 0.5rem 0.75rem;
+    }
+
+    /* ALERTS OVERRIDE COLORS SLIGHTLY */
+    .stAlert {
+        border-radius: 0.9rem;
+    }
+
+    /* FOOTER BADGE */
+    .footer {
+        text-align: center;
+        color: var(--text-muted);
+        font-size: 0.78rem;
+        margin-top: 1.0rem;
+        padding-bottom: 0.7rem;
     }
     </style>
     """,
@@ -95,8 +173,7 @@ st.markdown(
 # SIDEBAR: STEP PROGRESS
 # =========================
 def show_step_indicator(current_step_index: int, tabs_list):
-    """Render a vertical step-by-step progress indicator in the sidebar."""
-    st.sidebar.markdown("### Workflow Progress")
+    st.sidebar.markdown("## 🧭 Workflow Progress")
     for i, label in enumerate(tabs_list):
         if i < current_step_index:
             icon = "✅"
@@ -106,7 +183,7 @@ def show_step_indicator(current_step_index: int, tabs_list):
             icon = "⚪"
         st.sidebar.markdown(f"{icon} {label}")
     st.sidebar.markdown("---")
-
+    st.sidebar.markdown("**Theme:** Green Gradient Microplastic Risk Dashboard")
 
 # =========================
 # WORKFLOW NAVIGATION
@@ -156,12 +233,10 @@ cat_cols = [
     "Author",
 ]
 
-
 # =========================
-# HELPER FUNCTIONS
+# HELPERS
 # =========================
 def get_value_counts_for_column(df, column):
-    """Return value counts as a clean DataFrame with unique column names."""
     if column not in df.columns:
         return pd.DataFrame(columns=[column, "count"])
     vc = df[column].value_counts(dropna=False)
@@ -169,7 +244,6 @@ def get_value_counts_for_column(df, column):
 
 
 def plot_value_counts_bar(df_counts, x_col=None, y_col="count", title="Value Counts"):
-    """Plot bar chart of value counts dataframe."""
     if df_counts.empty:
         st.write("No data to plot.")
         return
@@ -185,7 +259,6 @@ def plot_value_counts_bar(df_counts, x_col=None, y_col="count", title="Value Cou
     plt.close(fig)
 
 
-# Helper to open and close a green gradient card
 def card_open():
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
 
@@ -193,9 +266,8 @@ def card_open():
 def card_close():
     st.markdown("</div>", unsafe_allow_html=True)
 
-
 # =========================
-# 0. Overview / About the Study
+# 0. Overview / About
 # =========================
 if selected_tab == tabs[0]:
     card_open()
@@ -203,24 +275,24 @@ if selected_tab == tabs[0]:
 
     st.markdown(
         """
-        This interactive dashboard implements the proposed **predictive risk modeling framework**
+        This interactive dashboard implements a **predictive risk modeling framework**
         for **microplastic pollution**.
 
-        ### General Objective
+        ### 🎯 General Objective
         > To develop a predictive risk modeling framework for microplastic pollution using data mining techniques.
 
-        ### How this app is structured:
-        1. **Data Upload & Description** – Load the structured microplastic risk dataset derived from literature.  
-        2. **Data Preprocessing** – Clean, transform, and encode the data (KDD preprocessing stage).  
-        3. **Preprocessed Data Results** – Show what a *model-ready* dataset looks like.  
-        4. **Predictive Modeling & Validation** – Train classification models and validate them with cross-validation.  
-        5. **Risk Visualizations & Interpretation** – Visualize risk scores, categories, and distributions.
+        ### 🧪 App Structure
+        1. **Data Upload & Description** – Load your microplastic risk dataset.  
+        2. **Data Preprocessing** – Clean, transform, and encode the data.  
+        3. **Preprocessed Data Results** – Inspect the model-ready dataset.  
+        4. **Predictive Modeling & Validation** – Train and compare models.  
+        5. **Risk Visualizations & Interpretation** – Explore and interpret risk patterns.
         """
     )
 
     st.info(
-        "Start the workflow by going to **'1. Data Upload & Description'** in the navigation above. "
-        "Each subsequent step depends on the previous one."
+        "Begin with **'1. Data Upload & Description'** using the navigation bar above. "
+        "Each step builds on the previous one."
     )
     card_close()
 
@@ -233,9 +305,7 @@ elif selected_tab == tabs[1]:
 
     st.markdown(
         """
-        In this step, you upload the **structured dataset** of microplastic pollution risk.
-        This dataset is assumed to be the result of your **text mining / literature review** phase
-        (extraction of risk information from journal articles and reports).
+        Upload the **structured dataset** of microplastic pollution risk derived from your literature review or field data.
 
         Accepted formats: **CSV** or **Excel (.xlsx)**.
         """
@@ -249,20 +319,18 @@ elif selected_tab == tabs[1]:
             else:
                 raw_df = pd.read_excel(uploaded_file)
 
-            # Keep raw copy in session and initialize working df
             st.session_state.raw_df = raw_df.copy()
             st.session_state.df = raw_df.copy()
             st.session_state.preprocessed = False
 
             st.success("✅ Dataset uploaded successfully!")
 
-            # Basic description
             st.subheader("Dataset Description")
             rows, cols = raw_df.shape
             col1, col2 = st.columns(2)
             with col1:
-                st.write(f"**Rows:** {rows}")
-                st.write(f"**Columns:** {cols}")
+                st.metric("Rows", rows)
+                st.metric("Columns", cols)
             with col2:
                 st.write("**Column names:**")
                 st.write(list(raw_df.columns))
@@ -278,11 +346,13 @@ elif selected_tab == tabs[1]:
             st.markdown("</details>", unsafe_allow_html=True)
 
             st.info(
-                "Next, go to **'2. Data Preprocessing'** using the navigation above "
-                "to clean and transform the dataset for predictive modeling."
+                "Next, open **'2. Data Preprocessing'** from the navigation bar to clean "
+                "and transform the dataset for modeling."
             )
         except Exception as e:
             st.error(f"Failed to read the uploaded file: {e}")
+    else:
+        st.warning("Please upload a CSV or Excel file to continue.")
     card_close()
 
 # =========================
@@ -294,15 +364,13 @@ elif selected_tab == tabs[2]:
 
     st.markdown(
         """
-        This step prepares your dataset for machine learning by:
+        This step prepares your dataset for machine learning:
 
-        - Converting numeric columns to proper numeric types  
-        - Handling missing values and outliers (IQR-based clipping)  
-        - Applying log transforms for strongly skewed numeric features  
-        - Encoding categorical variables into integer labels  
-        - Standardizing numerical features (mean ≈ 0, std ≈ 1)  
-
-        After this, the dataset becomes **model-ready**.
+        - Convert numeric columns to proper numeric types  
+        - Handle missing values and outliers (IQR-based clipping)  
+        - Apply log transforms for skewed numeric features  
+        - Encode categorical variables  
+        - Standardize numerical features  
         """
     )
 
@@ -315,7 +383,6 @@ elif selected_tab == tabs[2]:
     df_prep = df.copy()
     outlier_report = []
 
-    # Numeric conversions, outlier clipping, optional log transform
     for col in num_cols:
         if col in df_prep.columns:
             df_prep[col] = pd.to_numeric(df_prep[col], errors="coerce")
@@ -331,7 +398,6 @@ elif selected_tab == tabs[2]:
                 skew_before = df_prep[col].skew()
                 transform_applied = False
                 if skew_before > 1:
-                    # Apply log1p transform if positive skew
                     df_prep[col] = np.where(
                         df_prep[col] > -1,
                         np.log1p(df_prep[col] - df_prep[col].min() + 1),
@@ -343,7 +409,6 @@ elif selected_tab == tabs[2]:
                     f"skew_before={skew_before:.2f}, log_transform_applied={transform_applied}"
                 )
 
-    # Categorical encodings using LabelEncoder
     for col in cat_cols:
         if col in df_prep.columns:
             try:
@@ -351,7 +416,6 @@ elif selected_tab == tabs[2]:
             except Exception:
                 pass
 
-    # Scaling numeric columns
     scaler = StandardScaler()
     for col in num_cols:
         if col in df_prep.columns:
@@ -360,7 +424,6 @@ elif selected_tab == tabs[2]:
             except Exception:
                 pass
 
-    # Save preprocessed into session
     st.session_state.df = df_prep
     st.session_state.preprocessed = True
 
@@ -377,8 +440,7 @@ elif selected_tab == tabs[2]:
             st.write("No numeric columns from the expected list were found or processed.")
 
     st.info(
-        "Proceed to **'3. Preprocessed Data Results'** using the navigation above "
-        "to inspect the final cleaned and model-ready dataset in more detail."
+        "Open **'3. Preprocessed Data Results'** to explore the cleaned, model-ready dataset."
     )
     card_close()
 
@@ -395,20 +457,13 @@ elif selected_tab == tabs[3]:
         st.stop()
 
     df_prep = st.session_state.df
-    raw = st.session_state.raw_df
 
     st.markdown(
         """
-        This step summarizes the **final state of your preprocessed dataset**.  
-        It shows that the data is now:
-
-        - ✅ Numerically cleaned and standardized  
-        - ✅ Categorical variables encoded as integers  
-        - ✅ Free from invalid values and ready for modeling  
+        Here you can verify that the **preprocessed dataset** is ready for modeling.
         """
     )
 
-    # 1. Dataset Overview
     st.subheader("1. Dataset Overview After Preprocessing")
     n_rows, n_cols = df_prep.shape
     numeric_cols_present = df_prep.select_dtypes(include=[np.number]).columns.tolist()
@@ -422,26 +477,22 @@ elif selected_tab == tabs[3]:
     st.markdown("**Sample of final preprocessed data (first 20 rows):**")
     st.dataframe(df_prep.head(20), use_container_width=True)
 
-    # 2. Numeric Summary
     st.subheader("2. Numeric Feature Summary")
     if numeric_cols_present:
-        st.markdown("Descriptive statistics for all numeric features:")
         st.dataframe(df_prep[numeric_cols_present].describe(), use_container_width=True)
 
-        # Single feature distribution
         st.markdown("**Inspect distribution of a selected numeric feature:**")
         selected_num = st.selectbox("Choose a numeric column:", numeric_cols_present)
         fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-        sns.histplot(df_prep[selected_num].dropna(), kde=True, ax=axes[0], color="steelblue")
+        sns.histplot(df_prep[selected_num].dropna(), kde=True, ax=axes[0], color="seagreen")
         axes[0].set_title(f"{selected_num} – Histogram")
-        sns.boxplot(x=df_prep[selected_num], ax=axes[1], color="orange")
+        sns.boxplot(x=df_prep[selected_num], ax=axes[1], color="lightgreen")
         axes[1].set_title(f"{selected_num} – Boxplot")
         st.pyplot(fig)
         plt.close(fig)
     else:
         st.info("No numeric columns found in the preprocessed dataset.")
 
-    # 3. Encoded Categorical Summary
     st.subheader("3. Encoded Categorical Feature Summary")
     if categorical_cols_present:
         for col in categorical_cols_present:
@@ -452,7 +503,6 @@ elif selected_tab == tabs[3]:
     else:
         st.info("No categorical/encoded columns found.")
 
-    # 4. Missing Value Check
     st.subheader("4. Missing Value Assessment")
     total_missing = int(df_prep.isna().sum().sum())
     if total_missing == 0:
@@ -461,10 +511,8 @@ elif selected_tab == tabs[3]:
         st.warning(f"There are {total_missing} missing values left.")
         st.dataframe(df_prep.isna().sum().to_frame("missing_count"))
 
-    st.markdown("---")
     st.info(
-        "Next, go to **'4. Predictive Modeling & Validation'** using the navigation above "
-        "to build and validate classification models on this dataset."
+        "Proceed to **'4. Predictive Modeling & Validation'** to build and compare models."
     )
     card_close()
 
@@ -488,27 +536,19 @@ elif selected_tab == tabs[4]:
 
     st.markdown(
         """
-        In this step, we train **classification models** to predict:
+        We train classification models to predict:
 
-        - **Risk_Type** (e.g., Ecological, Human health, etc.)  
-        - **Risk_Level** (e.g., Low, Medium, High)  
-
-        and we evaluate them using:
-
-        - Accuracy  
-        - Precision, Recall, F1-score (weighted)  
-        - K-Fold Cross Validation (for robustness and generalizability)  
+        - **Risk_Type** (e.g., ecological, human health, etc.)  
+        - **Risk_Level** (e.g., low, medium, high)  
         """
     )
 
-    # Prepare data
     X = df.drop(columns=["Risk_Type", "Risk_Level"], errors="ignore")
     y_type = df["Risk_Type"]
     y_level = df["Risk_Level"]
 
     X = X.select_dtypes(include=[np.number]).fillna(0)
 
-    # Train/test split
     X_train, X_test, y_train_type, y_test_type = train_test_split(
         X, y_type, test_size=0.2, random_state=42
     )
@@ -519,10 +559,7 @@ elif selected_tab == tabs[4]:
     st.subheader("Train–Test Split")
     st.write(f"X_train shape: {X_train.shape}")
     st.write(f"X_test shape: {X_test.shape}")
-    st.write(f"y_train_type length: {len(y_train_type)}")
-    st.write(f"y_test_type length: {len(y_test_type)}")
 
-    # Define models
     models = {
         "Logistic Regression": LogisticRegression(max_iter=2000),
         "Random Forest": RandomForestClassifier(),
@@ -535,7 +572,6 @@ elif selected_tab == tabs[4]:
         with tab_model:
             st.subheader(f"Model: {model_name}")
 
-            # --- Risk_Type ---
             model_t = clone(model)
             model_t.fit(X_train, y_train_type)
             pred_type = model_t.predict(X_test)
@@ -555,7 +591,6 @@ elif selected_tab == tabs[4]:
                 f1_score(y_test_type, pred_type, average="weighted", zero_division=0),
             )
 
-            # --- Risk_Level ---
             model_l = clone(model)
             model_l.fit(X_train, y_train_level)
             pred_level = model_l.predict(X_test)
@@ -575,7 +610,6 @@ elif selected_tab == tabs[4]:
                 f1_score(y_test_level, pred_level, average="weighted", zero_division=0),
             )
 
-            # --- Cross Validation on Risk_Type ---
             st.markdown("### K-Fold Cross Validation (Risk_Type)")
             try:
                 kf = KFold(n_splits=5, shuffle=True, random_state=42)
@@ -587,8 +621,7 @@ elif selected_tab == tabs[4]:
                 st.error(f"Cross-validation failed: {e}")
 
     st.info(
-        "Use these metrics and model comparisons in the **Results & Discussion** section "
-        "to justify which algorithm is most suitable for microplastic risk prediction."
+        "Use these metrics and model comparisons in your **Results & Discussion** chapter."
     )
     card_close()
 
@@ -607,10 +640,7 @@ elif selected_tab == tabs[5]:
 
     st.markdown(
         """
-        This final step focuses on **visualizing risk patterns** that can be used in your
-        thesis **Results and Discussion** chapter.
-
-        Choose a visualization type from the sidebar.
+        Visualize risk patterns to support your **Results and Discussion**.
         """
     )
 
@@ -626,7 +656,7 @@ elif selected_tab == tabs[5]:
         st.subheader("Risk Score Distribution")
         if "Risk_Score" in df.columns:
             fig, ax = plt.subplots()
-            sns.histplot(df["Risk_Score"], kde=True, ax=ax)
+            sns.histplot(df["Risk_Score"], kde=True, ax=ax, color="seagreen")
             ax.set_xlabel("Risk_Score")
             ax.set_title("Distribution of Risk_Score")
             st.pyplot(fig)
@@ -638,7 +668,7 @@ elif selected_tab == tabs[5]:
         st.subheader("Risk Score vs MP_Count_per_L")
         if "Risk_Score" in df.columns and "MP_Count_per_L" in df.columns:
             fig, ax = plt.subplots()
-            ax.scatter(df["Risk_Score"], df["MP_Count_per_L"], alpha=0.7)
+            ax.scatter(df["Risk_Score"], df["MP_Count_per_L"], alpha=0.7, c="seagreen")
             ax.set_xlabel("Risk_Score")
             ax.set_ylabel("MP_Count_per_L")
             ax.set_title("Risk Score vs Microplastic Count per Liter")
@@ -651,7 +681,7 @@ elif selected_tab == tabs[5]:
         st.subheader("Risk Score by Risk Level")
         if "Risk_Score" in df.columns and "Risk_Level" in df.columns:
             fig, ax = plt.subplots()
-            sns.boxplot(x="Risk_Level", y="Risk_Score", data=df, ax=ax)
+            sns.boxplot(x="Risk_Level", y="Risk_Score", data=df, ax=ax, palette="Greens")
             ax.set_title("Risk Score Distribution by Risk Level")
             st.pyplot(fig)
             plt.close(fig)
@@ -668,3 +698,9 @@ elif selected_tab == tabs[5]:
             else:
                 st.warning(f"{target} not found in dataset.")
     card_close()
+
+# Footer
+st.markdown(
+    '<div class="footer">Microplastic Risk Dashboard · Green Gradient Theme · Built with Streamlit</div>',
+    unsafe_allow_html=True,
+)
