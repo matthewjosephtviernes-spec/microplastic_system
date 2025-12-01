@@ -13,10 +13,81 @@ from sklearn.base import clone
 sns.set_style("whitegrid")
 
 st.set_page_config(page_title="Microplastic Risk Dashboard", page_icon="🧪", layout="wide")
-st.title("🧪 Microplastic Risk Analysis — Predictive Risk Modeling Dashboard")
+st.title("🌊 Microplastic Risk Data Mining & Forecasting")
+
+# Global styling (inspired by flood dashboard screenshot)
+st.markdown(
+    """
+    <style>
+    /* Main background */
+    [data-testid="stAppViewContainer"] {
+        background-color: #ffe6f0;
+    }
+
+    /* Sidebar background */
+    [data-testid="stSidebar"] {
+        background-color: #ffd1e3;
+    }
+
+    [data-testid="stSidebar"] * {
+        color: #1f1f1f !important;
+    }
+
+    /* Make headers darker for contrast */
+    h1, h2, h3, h4 {
+        color: #1f1f1f;
+    }
+
+    /* Top horizontal navigation styled as pill buttons
+       Only target radios in the main content, not in the sidebar. */
+    section.main div[role="radiogroup"] > label {
+        display: inline-flex !important;
+        align-items: center;
+        justify-content: center;
+        padding: 0.45rem 1.3rem;
+        margin-right: 0.45rem;
+        margin-bottom: 0.35rem;
+        border-radius: 999px;
+        background-color: #ff4b8b20;
+        border: 1px solid #ff4b8b66;
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+
+    section.main div[role="radiogroup"] > label:hover {
+        background-color: #ff4b8b35;
+    }
+
+    section.main div[role="radiogroup"] > label[data-checked="true"] {
+        background-color: #ff4b8b;
+        color: white !important;
+        border-color: #ff4b8b;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # -----------------------------
-# Tabs definition (used everywhere)
+# Step progress indicator
+# -----------------------------
+def show_step_indicator(current_step_index: int, tabs_list):
+    """Render a vertical step-by-step progress indicator in the sidebar."""
+    st.sidebar.markdown("### Workflow Progress")
+    for i, label in enumerate(tabs_list):
+        if i < current_step_index:
+            icon = "✅"
+        elif i == current_step_index:
+            icon = "🟢"
+        else:
+            icon = "⚪"
+        st.sidebar.markdown(f"{icon} {label}")
+    st.sidebar.markdown("---")  # visual separator in sidebar
+
+
+# -----------------------------
+# Workflow navigation (top) & sidebar progress
 # -----------------------------
 tabs = [
     "Overview / About the Study",
@@ -27,30 +98,16 @@ tabs = [
     "5. Risk Visualizations & Interpretation",
 ]
 
-# -----------------------------
-# Step progress indicator (now in SIDEBAR)
-# -----------------------------
-def show_step_indicator_sidebar(current_step_index: int, tabs_list):
-    """Render a step-by-step progress indicator in the sidebar."""
-    st.sidebar.markdown("### Workflow Progress")
-    for i, label in enumerate(tabs_list):
-        if i < current_step_index:
-            icon = "✅"
-        elif i == current_step_index:
-            icon = "🟢"
-        else:
-            icon = "⚪"
-        st.sidebar.markdown(f"{icon} {label}")
-
-# -----------------------------
-# TOP navigation (instead of sidebar navigation)
-# -----------------------------
 st.markdown("### Workflow Navigation")
-selected_tab = st.radio("Go to step:", tabs, key="top_nav")
+selected_tab = st.radio(
+    "Go to step:",
+    tabs,
+    horizontal=True,
+    label_visibility="collapsed",
+)
 
-# Determine current step index and show progress in sidebar
 current_step_index = tabs.index(selected_tab)
-show_step_indicator_sidebar(current_step_index, tabs)
+show_step_indicator(current_step_index, tabs)
 
 # -----------------------------
 # Session state for data
@@ -121,15 +178,12 @@ if selected_tab == tabs[0]:
         ### General Objective
         > To develop a predictive risk modeling framework for microplastic pollution using data mining techniques.
 
-        ### How this app is structured (aligned with your thesis):
+        ### How this app is structured:
         1. **Data Upload & Description** – Load the structured microplastic risk dataset derived from literature.  
         2. **Data Preprocessing** – Clean, transform, and encode the data (KDD preprocessing stage).  
         3. **Preprocessed Data Results** – Show what a *model-ready* dataset looks like.  
         4. **Predictive Modeling & Validation** – Train classification models and validate them with cross-validation.  
         5. **Risk Visualizations & Interpretation** – Visualize risk scores, categories, and distributions.
-
-        You can use screenshots from each step in your thesis for the **System Design**, **Methodology**, 
-        and **Results & Discussion** chapters.
         """
     )
 
