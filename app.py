@@ -16,9 +16,8 @@ st.set_page_config(page_title="Microplastic Risk Dashboard", page_icon="🧪", l
 st.title("🧪 Microplastic Risk Analysis — Predictive Risk Modeling Dashboard")
 
 # -----------------------------
-# Sidebar navigation
+# Tabs definition (used everywhere)
 # -----------------------------
-st.sidebar.title("Navigation")
 tabs = [
     "Overview / About the Study",
     "1. Data Upload & Description",
@@ -27,30 +26,31 @@ tabs = [
     "4. Predictive Modeling & Validation",
     "5. Risk Visualizations & Interpretation",
 ]
-selected_tab = st.sidebar.radio("Go to step:", tabs)
-
 
 # -----------------------------
-# Step progress indicator
+# Step progress indicator (now in SIDEBAR)
 # -----------------------------
-def show_step_indicator(current_step_index: int, tabs_list):
-    """Render a simple step-by-step progress indicator at the top of each page."""
-    st.markdown("### Workflow Progress")
-    cols = st.columns(len(tabs_list))
+def show_step_indicator_sidebar(current_step_index: int, tabs_list):
+    """Render a step-by-step progress indicator in the sidebar."""
+    st.sidebar.markdown("### Workflow Progress")
     for i, label in enumerate(tabs_list):
-        with cols[i]:
-            if i < current_step_index:
-                icon = "✅"
-            elif i == current_step_index:
-                icon = "🟢"
-            else:
-                icon = "⚪"
-            st.markdown(
-                f"<div style='text-align:center'>{icon}<br/><span style='font-size:0.75rem'>{label}</span></div>",
-                unsafe_allow_html=True,
-            )
-    st.markdown("---")  # visual separator before main content
+        if i < current_step_index:
+            icon = "✅"
+        elif i == current_step_index:
+            icon = "🟢"
+        else:
+            icon = "⚪"
+        st.sidebar.markdown(f"{icon} {label}")
 
+# -----------------------------
+# TOP navigation (instead of sidebar navigation)
+# -----------------------------
+st.markdown("### Workflow Navigation")
+selected_tab = st.radio("Go to step:", tabs, key="top_nav")
+
+# Determine current step index and show progress in sidebar
+current_step_index = tabs.index(selected_tab)
+show_step_indicator_sidebar(current_step_index, tabs)
 
 # -----------------------------
 # Session state for data
@@ -111,7 +111,6 @@ def plot_value_counts_bar(df_counts, x_col=None, y_col="count", title="Value Cou
 # 0. Overview / About the Study
 # -----------------------------
 if selected_tab == tabs[0]:
-    show_step_indicator(0, tabs)
     st.header("Overview / About the Study")
 
     st.markdown(
@@ -135,7 +134,7 @@ if selected_tab == tabs[0]:
     )
 
     st.info(
-        "Start the workflow by going to **'1. Data Upload & Description'** in the sidebar. "
+        "Start the workflow by going to **'1. Data Upload & Description'** in the navigation above. "
         "Each subsequent step depends on the previous one."
     )
 
@@ -144,7 +143,6 @@ if selected_tab == tabs[0]:
 # 1. Data Upload & Description
 # -----------------------------
 elif selected_tab == tabs[1]:
-    show_step_indicator(1, tabs)
     st.header("Step 1 – Data Upload & Description")
 
     st.markdown(
@@ -194,8 +192,8 @@ elif selected_tab == tabs[1]:
             st.markdown("</details>", unsafe_allow_html=True)
 
             st.info(
-                "Next, go to **'2. Data Preprocessing'** to clean and transform the dataset "
-                "for predictive modeling."
+                "Next, go to **'2. Data Preprocessing'** using the navigation above "
+                "to clean and transform the dataset for predictive modeling."
             )
         except Exception as e:
             st.error(f"Failed to read the uploaded file: {e}")
@@ -205,7 +203,6 @@ elif selected_tab == tabs[1]:
 # 2. Data Preprocessing
 # -----------------------------
 elif selected_tab == tabs[2]:
-    show_step_indicator(2, tabs)
     st.header("Step 2 – Data Preprocessing")
 
     st.markdown(
@@ -292,8 +289,8 @@ elif selected_tab == tabs[2]:
             st.write("No numeric columns from the expected list were found or processed.")
 
     st.info(
-        "Proceed to **'3. Preprocessed Data Results'** to inspect the final cleaned and "
-        "model-ready dataset in more detail."
+        "Proceed to **'3. Preprocessed Data Results'** using the navigation above "
+        "to inspect the final cleaned and model-ready dataset in more detail."
     )
 
 
@@ -301,7 +298,6 @@ elif selected_tab == tabs[2]:
 # 3. Preprocessed Data Results
 # -----------------------------
 elif selected_tab == tabs[3]:
-    show_step_indicator(3, tabs)
     st.header("Step 3 – Preprocessed Data Results")
 
     if st.session_state.df is None or st.session_state.preprocessed is False:
@@ -377,8 +373,8 @@ elif selected_tab == tabs[3]:
 
     st.markdown("---")
     st.info(
-        "Next, go to **'4. Predictive Modeling & Validation'** to build and validate "
-        "classification models on this dataset."
+        "Next, go to **'4. Predictive Modeling & Validation'** using the navigation above "
+        "to build and validate classification models on this dataset."
     )
 
 
@@ -386,7 +382,6 @@ elif selected_tab == tabs[3]:
 # 4. Predictive Modeling & Validation
 # -----------------------------
 elif selected_tab == tabs[4]:
-    show_step_indicator(4, tabs)
     st.header("Step 4 – Predictive Modeling & Validation")
 
     df = st.session_state.df
@@ -509,7 +504,6 @@ elif selected_tab == tabs[4]:
 # 5. Risk Visualizations & Interpretation
 # -----------------------------
 elif selected_tab == tabs[5]:
-    show_step_indicator(5, tabs)
     st.header("Step 5 – Risk Visualizations & Interpretation")
 
     df = st.session_state.df
