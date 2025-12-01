@@ -59,15 +59,15 @@ st.markdown(
 
     /* SECTION CARDS */
     .section-card {
-        background: radial-gradient(circle at top left, #ecfff2 0%, #f7fff9 45%, #ffffff 100%);
+        background: #ffffff;
         padding: 1.6rem 1.8rem;
         border-radius: 1.2rem;
-        box-shadow: 0 14px 30px rgba(0, 80, 40, 0.08);
-        border: 1px solid rgba(7, 102, 61, 0.14);
+        box-shadow: 0 10px 24px rgba(0, 80, 40, 0.08);
+        border: 1px solid rgba(7, 102, 61, 0.12);
         margin-bottom: 1.5rem;
     }
 
-    /* TOP NAVIGATION – RADIO AS PILLS (MAIN ONLY) */
+    /* (kept for future top-radio use; currently no radiogroup in main) */
     section.main div[role="radiogroup"] > label {
         display: inline-flex !important;
         align-items: center;
@@ -83,18 +83,6 @@ st.markdown(
         font-size: 0.9rem;
         color: #064422 !important;
         transition: all 0.15s ease-in-out;
-    }
-    section.main div[role="radiogroup"] > label:hover {
-        background: linear-gradient(135deg, #c5f3d3, #aceac0);
-        box-shadow: 0 4px 10px rgba(0, 80, 40, 0.18);
-        transform: translateY(-1px);
-    }
-    section.main div[role="radiogroup"] > label[data-checked="true"] {
-        background: linear-gradient(135deg, var(--primary), var(--primary-dark));
-        color: #ffffff !important;
-        border-color: var(--primary-dark);
-        box-shadow: 0 6px 14px rgba(0, 80, 40, 0.40);
-        transform: translateY(-1px);
     }
 
     /* BUTTONS */
@@ -120,14 +108,6 @@ st.markdown(
         background: rgba(0,0,0,0.08);
     }
 
-    /* SELECTBOX / INPUTS / SLIDERS */
-    .stSelectbox, .stMultiSelect, .stTextInput, .stNumberInput, .stDateInput {
-        border-radius: 0.6rem !important;
-    }
-    .stSelectbox > div, .stMultiSelect > div, .stTextInput > div, .stNumberInput > div {
-        border-radius: 0.6rem !important;
-    }
-
     /* METRICS */
     .stMetric {
         background: linear-gradient(135deg, #e3ffe9, #f8fff9);
@@ -138,9 +118,13 @@ st.markdown(
 
     /* TABLES */
     .stDataFrame, .stTable {
+        background: #ffffff !important;
         border-radius: 0.9rem;
         overflow: hidden;
         box-shadow: 0 10px 20px rgba(0, 80, 40, 0.04);
+    }
+    .stDataFrame * {
+        color: #0f172a !important;
     }
 
     /* EXPANDERS */
@@ -151,7 +135,7 @@ st.markdown(
         padding: 0.5rem 0.75rem;
     }
 
-    /* ALERTS OVERRIDE COLORS SLIGHTLY */
+    /* ALERTS */
     .stAlert {
         border-radius: 0.9rem;
     }
@@ -170,23 +154,7 @@ st.markdown(
 )
 
 # =========================
-# SIDEBAR: STEP PROGRESS
-# =========================
-def show_step_indicator(current_step_index: int, tabs_list):
-    st.sidebar.markdown("## 🧭 Workflow Progress")
-    for i, label in enumerate(tabs_list):
-        if i < current_step_index:
-            icon = "✅"
-        elif i == current_step_index:
-            icon = "🟢"
-        else:
-            icon = "⚪"
-        st.sidebar.markdown(f"{icon} {label}")
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**Theme:** Green Gradient Microplastic Risk Dashboard")
-
-# =========================
-# WORKFLOW NAVIGATION
+# TABS / STEPS
 # =========================
 tabs = [
     "Overview / About the Study",
@@ -197,16 +165,32 @@ tabs = [
     "5. Risk Visualizations & Interpretation",
 ]
 
-st.markdown("### Workflow Navigation")
-selected_tab = st.radio(
-    "Go to step:",
+# =========================
+# SIDEBAR NAVIGATION + PROGRESS
+# =========================
+st.sidebar.markdown("## 📌 Workflow Steps")
+selected_tab = st.sidebar.radio(
+    "Navigate:",
     tabs,
-    horizontal=True,
-    label_visibility="collapsed",
+    index=0,
 )
 
 current_step_index = tabs.index(selected_tab)
-show_step_indicator(current_step_index, tabs)
+
+# simple progress view (read-only icons)
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🧭 Progress")
+for i, label in enumerate(tabs):
+    if i < current_step_index:
+        icon = "✅"
+    elif i == current_step_index:
+        icon = "🟢"
+    else:
+        icon = "⚪"
+    st.sidebar.markdown(f"{icon} {label}")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Theme:** Green Gradient Microplastic Risk Dashboard")
 
 # =========================
 # SESSION STATE
@@ -291,7 +275,7 @@ if selected_tab == tabs[0]:
     )
 
     st.info(
-        "Begin with **'1. Data Upload & Description'** using the navigation bar above. "
+        "Begin with **'1. Data Upload & Description'** using the sidebar steps. "
         "Each step builds on the previous one."
     )
     card_close()
@@ -346,7 +330,7 @@ elif selected_tab == tabs[1]:
             st.markdown("</details>", unsafe_allow_html=True)
 
             st.info(
-                "Next, open **'2. Data Preprocessing'** from the navigation bar to clean "
+                "Next, open **'2. Data Preprocessing'** from the sidebar to clean "
                 "and transform the dataset for modeling."
             )
         except Exception as e:
@@ -440,7 +424,7 @@ elif selected_tab == tabs[2]:
             st.write("No numeric columns from the expected list were found or processed.")
 
     st.info(
-        "Open **'3. Preprocessed Data Results'** to explore the cleaned, model-ready dataset."
+        "Open **'3. Preprocessed Data Results'** in the sidebar to explore the cleaned, model-ready dataset."
     )
     card_close()
 
@@ -460,7 +444,7 @@ elif selected_tab == tabs[3]:
 
     st.markdown(
         """
-        Here you can verify that the **preprocessed dataset** is ready for modeling.
+        Verify that the **preprocessed dataset** is ready for modeling.
         """
     )
 
@@ -512,7 +496,7 @@ elif selected_tab == tabs[3]:
         st.dataframe(df_prep.isna().sum().to_frame("missing_count"))
 
     st.info(
-        "Proceed to **'4. Predictive Modeling & Validation'** to build and compare models."
+        "Proceed to **'4. Predictive Modeling & Validation'** using the sidebar steps."
     )
     card_close()
 
@@ -536,7 +520,7 @@ elif selected_tab == tabs[4]:
 
     st.markdown(
         """
-        We train classification models to predict:
+        Train classification models to predict:
 
         - **Risk_Type** (e.g., ecological, human health, etc.)  
         - **Risk_Level** (e.g., low, medium, high)  
@@ -641,6 +625,7 @@ elif selected_tab == tabs[5]:
     st.markdown(
         """
         Visualize risk patterns to support your **Results and Discussion**.
+        Choose a visualization from the sidebar.
         """
     )
 
@@ -650,7 +635,7 @@ elif selected_tab == tabs[5]:
         "Risk Score by Risk Level",
         "Class Distribution (Risk_Type & Risk_Level)",
     ]
-    vis_choice = st.sidebar.selectbox("Choose visualization:", vis_options)
+    vis_choice = st.sidebar.selectbox("Visualization type:", vis_options)
 
     if vis_choice == "Risk Score Distribution":
         st.subheader("Risk Score Distribution")
