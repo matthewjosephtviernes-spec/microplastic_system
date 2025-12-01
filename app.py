@@ -13,32 +13,44 @@ from sklearn.base import clone
 sns.set_style("whitegrid")
 
 st.set_page_config(page_title="Microplastic Risk Dashboard", page_icon="🧪", layout="wide")
-st.title("🌊 Microplastic Risk Data Mining & Forecasting")
+st.title("🧪 Microplastic Risk Data Mining & Forecasting")
 
-# Global styling (inspired by flood dashboard screenshot)
+# =========================
+# GLOBAL STYLING (GREEN THEME)
+# =========================
 st.markdown(
     """
     <style>
-    /* Main background */
+    /* Main background: soft green gradient */
     [data-testid="stAppViewContainer"] {
-        background-color: #ffe6f0;
+        background: radial-gradient(circle at top left, #e5ffe8 0, #f7fff9 40%, #ffffff 100%);
     }
 
-    /* Sidebar background */
+    /* Sidebar background: darker green gradient */
     [data-testid="stSidebar"] {
-        background-color: #ffd1e3;
+        background: linear-gradient(180deg, #0b5330 0%, #0f7b45 50%, #0b5330 100%);
+        color: #f0fff6;
     }
-
     [data-testid="stSidebar"] * {
-        color: #1f1f1f !important;
+        color: #f0fff6 !important;
     }
 
-    /* Make headers darker for contrast */
+    /* Headings */
     h1, h2, h3, h4 {
-        color: #1f1f1f;
+        color: #06331c;
     }
 
-    /* Top horizontal navigation styled as pill buttons
+    /* Section cards */
+    .section-card {
+        background: linear-gradient(135deg, #e7ffe9 0%, #f5fff7 50%, #ffffff 100%);
+        padding: 1.5rem 1.8rem;
+        border-radius: 1.2rem;
+        box-shadow: 0 8px 20px rgba(0, 80, 40, 0.08);
+        border: 1px solid rgba(10, 100, 60, 0.12);
+        margin-bottom: 1.5rem;
+    }
+
+    /* Top horizontal navigation styled as green pill buttons
        Only target radios in the main content, not in the sidebar. */
     section.main div[role="radiogroup"] > label {
         display: inline-flex !important;
@@ -48,30 +60,40 @@ st.markdown(
         margin-right: 0.45rem;
         margin-bottom: 0.35rem;
         border-radius: 999px;
-        background-color: #ff4b8b20;
-        border: 1px solid #ff4b8b66;
+        background: linear-gradient(135deg, #d6f7dc, #c2f1cf);
+        border: 1px solid #7edb93;
         cursor: pointer;
         font-weight: 600;
         font-size: 0.9rem;
+        color: #064422 !important;
     }
 
     section.main div[role="radiogroup"] > label:hover {
-        background-color: #ff4b8b35;
+        background: linear-gradient(135deg, #c1f2cd, #a9ebba);
     }
 
     section.main div[role="radiogroup"] > label[data-checked="true"] {
-        background-color: #ff4b8b;
-        color: white !important;
-        border-color: #ff4b8b;
+        background: linear-gradient(135deg, #0da95c, #0b7d44);
+        color: #ffffff !important;
+        border-color: #0b7d44;
+        box-shadow: 0 4px 10px rgba(0, 80, 40, 0.35);
+    }
+
+    /* Metrics and small chips */
+    .stMetric {
+        background: linear-gradient(135deg, #e3ffe9, #f8fff9);
+        border-radius: 0.9rem;
+        padding: 0.3rem 0.7rem;
+        box-shadow: 0 4px 10px rgba(0, 80, 40, 0.08);
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# -----------------------------
-# Step progress indicator
-# -----------------------------
+# =========================
+# SIDEBAR: STEP PROGRESS
+# =========================
 def show_step_indicator(current_step_index: int, tabs_list):
     """Render a vertical step-by-step progress indicator in the sidebar."""
     st.sidebar.markdown("### Workflow Progress")
@@ -83,12 +105,12 @@ def show_step_indicator(current_step_index: int, tabs_list):
         else:
             icon = "⚪"
         st.sidebar.markdown(f"{icon} {label}")
-    st.sidebar.markdown("---")  # visual separator in sidebar
+    st.sidebar.markdown("---")
 
 
-# -----------------------------
-# Workflow navigation (top) & sidebar progress
-# -----------------------------
+# =========================
+# WORKFLOW NAVIGATION
+# =========================
 tabs = [
     "Overview / About the Study",
     "1. Data Upload & Description",
@@ -109,9 +131,9 @@ selected_tab = st.radio(
 current_step_index = tabs.index(selected_tab)
 show_step_indicator(current_step_index, tabs)
 
-# -----------------------------
-# Session state for data
-# -----------------------------
+# =========================
+# SESSION STATE
+# =========================
 if "df" not in st.session_state:
     st.session_state.df = None
 if "raw_df" not in st.session_state:
@@ -135,15 +157,14 @@ cat_cols = [
 ]
 
 
-# -----------------------------
-# Helper functions
-# -----------------------------
+# =========================
+# HELPER FUNCTIONS
+# =========================
 def get_value_counts_for_column(df, column):
     """Return value counts as a clean DataFrame with unique column names."""
     if column not in df.columns:
         return pd.DataFrame(columns=[column, "count"])
     vc = df[column].value_counts(dropna=False)
-    # Build explicitly to avoid duplicate column names
     return pd.DataFrame({column: vc.index, "count": vc.values})
 
 
@@ -164,10 +185,20 @@ def plot_value_counts_bar(df_counts, x_col=None, y_col="count", title="Value Cou
     plt.close(fig)
 
 
-# -----------------------------
+# Helper to open and close a green gradient card
+def card_open():
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+
+
+def card_close():
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================
 # 0. Overview / About the Study
-# -----------------------------
+# =========================
 if selected_tab == tabs[0]:
+    card_open()
     st.header("Overview / About the Study")
 
     st.markdown(
@@ -191,12 +222,13 @@ if selected_tab == tabs[0]:
         "Start the workflow by going to **'1. Data Upload & Description'** in the navigation above. "
         "Each subsequent step depends on the previous one."
     )
+    card_close()
 
-
-# -----------------------------
+# =========================
 # 1. Data Upload & Description
-# -----------------------------
+# =========================
 elif selected_tab == tabs[1]:
+    card_open()
     st.header("Step 1 – Data Upload & Description")
 
     st.markdown(
@@ -251,12 +283,13 @@ elif selected_tab == tabs[1]:
             )
         except Exception as e:
             st.error(f"Failed to read the uploaded file: {e}")
+    card_close()
 
-
-# -----------------------------
+# =========================
 # 2. Data Preprocessing
-# -----------------------------
+# =========================
 elif selected_tab == tabs[2]:
+    card_open()
     st.header("Step 2 – Data Preprocessing")
 
     st.markdown(
@@ -276,6 +309,7 @@ elif selected_tab == tabs[2]:
     df = st.session_state.df
     if df is None:
         st.warning("⚠️ Please upload a dataset first in **Step 1 – Data Upload & Description**.")
+        card_close()
         st.stop()
 
     df_prep = df.copy()
@@ -346,16 +380,18 @@ elif selected_tab == tabs[2]:
         "Proceed to **'3. Preprocessed Data Results'** using the navigation above "
         "to inspect the final cleaned and model-ready dataset in more detail."
     )
+    card_close()
 
-
-# -----------------------------
+# =========================
 # 3. Preprocessed Data Results
-# -----------------------------
+# =========================
 elif selected_tab == tabs[3]:
+    card_open()
     st.header("Step 3 – Preprocessed Data Results")
 
     if st.session_state.df is None or st.session_state.preprocessed is False:
         st.warning("⚠️ Please run preprocessing first in **Step 2 – Data Preprocessing**.")
+        card_close()
         st.stop()
 
     df_prep = st.session_state.df
@@ -430,21 +466,24 @@ elif selected_tab == tabs[3]:
         "Next, go to **'4. Predictive Modeling & Validation'** using the navigation above "
         "to build and validate classification models on this dataset."
     )
+    card_close()
 
-
-# -----------------------------
+# =========================
 # 4. Predictive Modeling & Validation
-# -----------------------------
+# =========================
 elif selected_tab == tabs[4]:
+    card_open()
     st.header("Step 4 – Predictive Modeling & Validation")
 
     df = st.session_state.df
     if df is None or st.session_state.preprocessed is False:
         st.warning("⚠️ Please complete preprocessing in **Step 2** first.")
+        card_close()
         st.stop()
 
     if "Risk_Type" not in df.columns or "Risk_Level" not in df.columns:
         st.warning("Required target columns 'Risk_Type' and 'Risk_Level' not found in the dataset.")
+        card_close()
         st.stop()
 
     st.markdown(
@@ -539,7 +578,6 @@ elif selected_tab == tabs[4]:
             # --- Cross Validation on Risk_Type ---
             st.markdown("### K-Fold Cross Validation (Risk_Type)")
             try:
-                # You can change n_splits to 10 if you want to match a 10-fold design
                 kf = KFold(n_splits=5, shuffle=True, random_state=42)
                 cv_scores = cross_val_score(clone(model), X, y_type, cv=kf, scoring="accuracy")
                 st.write(f"CV Scores: {cv_scores}")
@@ -552,17 +590,19 @@ elif selected_tab == tabs[4]:
         "Use these metrics and model comparisons in the **Results & Discussion** section "
         "to justify which algorithm is most suitable for microplastic risk prediction."
     )
+    card_close()
 
-
-# -----------------------------
+# =========================
 # 5. Risk Visualizations & Interpretation
-# -----------------------------
+# =========================
 elif selected_tab == tabs[5]:
+    card_open()
     st.header("Step 5 – Risk Visualizations & Interpretation")
 
     df = st.session_state.df
     if df is None or st.session_state.preprocessed is False:
         st.warning("⚠️ Please preprocess the data first in **Step 2**.")
+        card_close()
         st.stop()
 
     st.markdown(
@@ -627,3 +667,4 @@ elif selected_tab == tabs[5]:
                 st.bar_chart(vc)
             else:
                 st.warning(f"{target} not found in dataset.")
+    card_close()
