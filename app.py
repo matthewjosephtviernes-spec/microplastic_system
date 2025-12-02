@@ -445,7 +445,6 @@ elif selected_tab == tabs[2]:
 
     st.session_state.df = df_prep
     st.session_state.preprocessed = True
-    # Do NOT clear df_with_preds / best_model_name here, so predictions stay valid.
 
     st.success("✅ Data preprocessing complete!")
 
@@ -642,25 +641,36 @@ elif selected_tab == tabs[4]:
         """
     )
 
-    X = df.drop(columns=["Risk_Type", "Risk_Level"], errors="ignore")
-    y_type = df["Risk_Type"]
-    y_level = df["Risk_Level"]
+    # ---- Handle missing targets: keep only rows with valid Risk_Type and Risk_Level for training ----
+    df_model = df.dropna(subset=["Risk_Type", "Risk_Level"]).copy()
+    if df_model.empty:
+        st.error(
+            "All rows have missing values in Risk_Type and/or Risk_Level. "
+            "The model cannot be trained. Please check your dataset."
+        )
+        card_close()
+        st.stop()
 
-    X = X.select_dtypes(include=[np.number]).fillna(0)
+    # Features and targets for training / validation
+    X_model = df_model.drop(columns=["Risk_Type", "Risk_Level"], errors="ignore")
+    y_type = df_model["Risk_Type"]
+    y_level = df_model["Risk_Level"]
+
+    X_model = X_model.select_dtypes(include=[np.number]).fillna(0)
 
     X_train, X_test, y_train_type, y_test_type = train_test_split(
-        X, y_type, test_size=0.2, random_state=42
+        X_model, y_type, test_size=0.2, random_state=42
     )
     _, _, y_train_level, y_test_level = train_test_split(
-        X, y_level, test_size=0.2, random_state=42
+        X_model, y_level, test_size=0.2, random_state=42
     )
 
-    st.subheader("Train–Test Split")
+    st.subheader("Train–Test Split (rows with non-missing targets)")
     st.write(f"X_train shape: {X_train.shape}")
     st.write(f"X_test shape: {X_test.shape}")
     st.caption(
-        "Around 80% of the data is used for training and 20% for testing, "
-        "which allows us to evaluate how well the model generalizes to unseen data."
+        "Around 80% of the rows with valid Risk_Type and Risk_Level are used for training and 20% for testing, "
+        "which allows us to evaluate how well the model generalizes."
     )
 
     models = {
@@ -745,7 +755,7 @@ elif selected_tab == tabs[4]:
             st.markdown("### K-Fold Cross Validation (Risk_Type)")
             try:
                 kf = KFold(n_splits=5, shuffle=True, random_state=42)
-                cv_scores = cross_val_score(clone(model), X, y_type, cv=kf, scoring="accuracy")
+                cv_scores = cross_val_score(clone(model), X_model, y_type, cv=kf, scoring="accuracy")
                 cv_mean = cv_scores.mean()
                 cv_mean_scores[model_name] = cv_mean
 
@@ -782,13 +792,17 @@ elif selected_tab == tabs[4]:
             """
         )
 
-        # Train on full data for Risk_Type and Risk_Level
-        best_model_type = clone(best_model).fit(X, y_type)
-        best_model_level = clone(best_model).fit(X, y_level)
+        # ---- Train on all rows with valid targets ----
+        best_model_type = clone(best_model).fit(X_model, y_type)
+        best_model_level = clone(best_model).fit(X_model, y_level)
+
+        # ---- Predict for ALL rows (including those with missing targets) ----
+        X_all = df.drop(columns=["Risk_Type", "Risk_Level"], errors="ignore")
+        X_all = X_all.select_dtypes(include=[np.number]).fillna(0)
 
         df_with_preds = df.copy()
-        df_with_preds["Pred_Risk_Type"] = best_model_type.predict(X)
-        df_with_preds["Pred_Risk_Level"] = best_model_level.predict(X)
+        df_with_preds["Pred_Risk_Type"] = best_model_type.predict(X_all)
+        df_with_preds["Pred_Risk_Level"] = best_model_level.predict(X_all)
 
         st.session_state.df_with_preds = df_with_preds
 
@@ -932,7 +946,7 @@ elif selected_tab == tabs[5]:
                         - The median risk score is lowest for **{lowest_level}** (≈ {lowest_med:.2f})  
                           and highest for **{highest_level}** (≈ {highest_med:.2f}).  
                         - This pattern indicates that the assigned risk levels are consistent with the numerical risk scores.  
-                        - If the boxes for two levels (e.g., *Medium* and *High*) overlap strongly, it suggests that the
+                        - If the boxes for two levels (for example, *Medium* and *High*) overlap strongly, it suggests that the
                           boundary between those levels may not be very sharp in the data.
                         """
                     )
@@ -998,69 +1012,77 @@ elif selected_tab == tabs[5]:
         st.subheader("Predicted vs Actual Risk_Type")
 
         if "Pred_Risk_Type" in df_vis.columns and "Risk_Type" in df_vis.columns:
-            cm = pd.crosstab(
-                df_vis["Risk_Type"],
-                df_vis["Pred_Risk_Type"],
-                rownames=["Actual"],
-                colnames=["Predicted"],
-            )
+            # Only use rows where both actual and predicted are not missing
+            mask_valid = df_vis[["Risk_Type", "Pred_Risk_Type"]].notna().all(axis=1)
+            df_cm = df_vis.loc[mask_valid].copy()
 
-            st.markdown("**Confusion Matrix (Counts)**")
-            st.dataframe(cm)
-
-            fig, ax = plt.subplots(figsize=(6, 4))
-            sns.heatmap(cm, annot=True, fmt="d", cmap="Greens", ax=ax)
-            ax.set_title("Confusion Matrix – Risk_Type")
-            st.pyplot(fig)
-            plt.close(fig)
-
-            # Dynamic interpretation
-            try:
-                overall_acc = accuracy_score(df_vis["Risk_Type"], df_vis["Pred_Risk_Type"])
-                vc_actual = df_vis["Risk_Type"].value_counts()
-                vc_pred = df_vis["Pred_Risk_Type"].value_counts()
-                top_actual = vc_actual.idxmax() if not vc_actual.empty else None
-                top_pred = vc_pred.idxmax() if not vc_pred.empty else None
-
-                st.markdown(
-                    f"""
-                    **Interpretation**
-
-                    - The overall accuracy for predicting **Risk_Type** on the full dataset is approximately **{overall_acc:.2%}**.  
-                    - The most common actual risk type is **{top_actual}**, while the most frequently predicted type is **{top_pred}**.  
-                    - Cells along the diagonal of the confusion matrix (where *Actual = Predicted*) represent **correct classifications**.  
-                    - Large values outside the diagonal indicate **systematic confusion** between specific risk types
-                      (for example, ecological risk misclassified as human health risk), which you can discuss as model limitations.
-                    """
-                )
-            except Exception:
-                st.markdown(
-                    """
-                    **Interpretation**
-
-                    - High values along the diagonal indicate that the model correctly identifies most risk types.  
-                    - Off-diagonal cells represent misclassifications, which are important to discuss when assessing model reliability.
-                    """
+            if df_cm.empty:
+                st.warning("No rows with both actual and predicted Risk_Type. Cannot build confusion matrix.")
+            else:
+                cm = pd.crosstab(
+                    df_cm["Risk_Type"],
+                    df_cm["Pred_Risk_Type"],
+                    rownames=["Actual"],
+                    colnames=["Predicted"],
                 )
 
-            # Distribution comparison
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Actual Risk_Type Distribution**")
-                st.bar_chart(df_vis["Risk_Type"].value_counts())
-            with col2:
-                st.markdown("**Predicted Risk_Type Distribution**")
-                st.bar_chart(df_vis["Pred_Risk_Type"].value_counts())
+                st.markdown("**Confusion Matrix (Counts)**")
+                st.dataframe(cm)
 
-            st.markdown(
-                """
-                **Additional interpretation**
+                fig, ax = plt.subplots(figsize=(6, 4))
+                sns.heatmap(cm, annot=True, fmt="d", cmap="Greens", ax=ax)
+                ax.set_title("Confusion Matrix – Risk_Type")
+                st.pyplot(fig)
+                plt.close(fig)
 
-                - If the predicted distribution is more concentrated in a single risk type than the actual distribution,
-                  the model may be **over-predicting** that category.  
-                - This helps explain whether the classifier is conservative or biased toward particular risk types.
-                """
-            )
+                # Dynamic interpretation
+                try:
+                    overall_acc = accuracy_score(df_cm["Risk_Type"], df_cm["Pred_Risk_Type"])
+                    vc_actual = df_cm["Risk_Type"].value_counts()
+                    vc_pred = df_cm["Pred_Risk_Type"].value_counts()
+                    top_actual = vc_actual.idxmax() if not vc_actual.empty else None
+                    top_pred = vc_pred.idxmax() if not vc_pred.empty else None
+
+                    st.markdown(
+                        f"""
+                        **Interpretation**
+
+                        - Considering only rows with valid labels, the overall accuracy for predicting **Risk_Type**
+                          is approximately **{overall_acc:.2%}**.  
+                        - The most common actual risk type is **{top_actual}**, while the most frequently predicted type is **{top_pred}**.  
+                        - Cells along the diagonal of the confusion matrix (where *Actual = Predicted*) represent **correct classifications**.  
+                        - Large values outside the diagonal indicate **systematic confusion** between specific risk types
+                          (for example, ecological risk misclassified as human health risk), which you can discuss as model limitations.
+                        """
+                    )
+                except Exception:
+                    st.markdown(
+                        """
+                        **Interpretation**
+
+                        - High values along the diagonal indicate that the model correctly identifies most risk types.  
+                        - Off-diagonal cells represent misclassifications, which are important to discuss when assessing model reliability.
+                        """
+                    )
+
+                # Distribution comparison
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Actual Risk_Type Distribution (valid rows)**")
+                    st.bar_chart(df_cm["Risk_Type"].value_counts())
+                with col2:
+                    st.markdown("**Predicted Risk_Type Distribution (valid rows)**")
+                    st.bar_chart(df_cm["Pred_Risk_Type"].value_counts())
+
+                st.markdown(
+                    """
+                    **Additional interpretation**
+
+                    - If the predicted distribution is more concentrated in a single risk type than the actual distribution,
+                      the model may be **over-predicting** that category.  
+                    - This helps explain whether the classifier is conservative or biased toward particular risk types.
+                    """
+                )
         else:
             st.warning(
                 "Columns `Risk_Type` and/or `Pred_Risk_Type` are missing. "
@@ -1072,70 +1094,78 @@ elif selected_tab == tabs[5]:
         st.subheader("Predicted vs Actual Risk_Level")
 
         if "Pred_Risk_Level" in df_vis.columns and "Risk_Level" in df_vis.columns:
-            cm = pd.crosstab(
-                df_vis["Risk_Level"],
-                df_vis["Pred_Risk_Level"],
-                rownames=["Actual"],
-                colnames=["Predicted"],
-            )
+            # Only use rows where both actual and predicted are not missing
+            mask_valid = df_vis[["Risk_Level", "Pred_Risk_Level"]].notna().all(axis=1)
+            df_cm = df_vis.loc[mask_valid].copy()
 
-            st.markdown("**Confusion Matrix (Counts)**")
-            st.dataframe(cm)
-
-            fig, ax = plt.subplots(figsize=(6, 4))
-            sns.heatmap(cm, annot=True, fmt="d", cmap="Greens", ax=ax)
-            ax.set_title("Confusion Matrix – Risk_Level")
-            st.pyplot(fig)
-            plt.close(fig)
-
-            # Dynamic interpretation
-            try:
-                overall_acc = accuracy_score(df_vis["Risk_Level"], df_vis["Pred_Risk_Level"])
-                vc_actual = df_vis["Risk_Level"].value_counts()
-                vc_pred = df_vis["Pred_Risk_Level"].value_counts()
-                top_actual = vc_actual.idxmax() if not vc_actual.empty else None
-                top_pred = vc_pred.idxmax() if not vc_pred.empty else None
-
-                st.markdown(
-                    f"""
-                    **Interpretation**
-
-                    - The overall accuracy for predicting **Risk_Level** is approximately **{overall_acc:.2%}**.  
-                    - The most common actual level is **{top_actual}**, while the most frequently predicted level is **{top_pred}**.  
-                    - A strong diagonal pattern (most counts on the diagonal) indicates that the model can distinguish
-                      between **Low**, **Medium**, and **High** risk levels reasonably well.  
-                    - If many *High* risk cases are predicted as *Medium*, the model tends to **underestimate high risk**,
-                      which you should mention when discussing potential management implications.
-                    """
-                )
-            except Exception:
-                st.markdown(
-                    """
-                    **Interpretation**
-
-                    - Correct predictions appear on the diagonal of the matrix, while off-diagonal cells represent misclassified levels.  
-                    - Concentrated errors between two levels (for example, many *Medium* cases predicted as *Low*)
-                      suggest that the boundary between these levels is not very clear for the model.
-                    """
+            if df_cm.empty:
+                st.warning("No rows with both actual and predicted Risk_Level. Cannot build confusion matrix.")
+            else:
+                cm = pd.crosstab(
+                    df_cm["Risk_Level"],
+                    df_cm["Pred_Risk_Level"],
+                    rownames=["Actual"],
+                    colnames=["Predicted"],
                 )
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Actual Risk_Level Distribution**")
-                st.bar_chart(df_vis["Risk_Level"].value_counts())
-            with col2:
-                st.markdown("**Predicted Risk_Level Distribution**")
-                st.bar_chart(df_vis["Pred_Risk_Level"].value_counts())
+                st.markdown("**Confusion Matrix (Counts)**")
+                st.dataframe(cm)
 
-            st.markdown(
-                """
-                **Additional interpretation**
+                fig, ax = plt.subplots(figsize=(6, 4))
+                sns.heatmap(cm, annot=True, fmt="d", cmap="Greens", ax=ax)
+                ax.set_title("Confusion Matrix – Risk_Level")
+                st.pyplot(fig)
+                plt.close(fig)
 
-                - Comparing the actual and predicted distributions shows whether the model is
-                  **over-assigning** or **under-assigning** certain levels (for example, predicting too many *Medium* cases).  
-                - This helps you argue whether the classifier is conservative or aggressive in labeling high-risk situations.
-                """
-            )
+                # Dynamic interpretation
+                try:
+                    overall_acc = accuracy_score(df_cm["Risk_Level"], df_cm["Pred_Risk_Level"])
+                    vc_actual = df_cm["Risk_Level"].value_counts()
+                    vc_pred = df_cm["Pred_Risk_Level"].value_counts()
+                    top_actual = vc_actual.idxmax() if not vc_actual.empty else None
+                    top_pred = vc_pred.idxmax() if not vc_pred.empty else None
+
+                    st.markdown(
+                        f"""
+                        **Interpretation**
+
+                        - Considering only rows with valid labels, the overall accuracy for predicting **Risk_Level**
+                          is approximately **{overall_acc:.2%}**.  
+                        - The most common actual level is **{top_actual}**, while the most frequently predicted level is **{top_pred}**.  
+                        - A strong diagonal pattern (most counts on the diagonal) indicates that the model can distinguish
+                          between **Low**, **Medium**, and **High** risk levels reasonably well.  
+                        - If many *High* risk cases are predicted as *Medium*, the model tends to **underestimate high risk**,
+                          which you should mention when discussing potential management implications.
+                        """
+                    )
+                except Exception:
+                    st.markdown(
+                        """
+                        **Interpretation**
+
+                        - Correct predictions appear on the diagonal of the matrix, while off-diagonal cells represent misclassified levels.  
+                        - Concentrated errors between two levels (for example, many *Medium* cases predicted as *Low*)
+                          suggest that the boundary between these levels is not very clear for the model.
+                        """
+                    )
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Actual Risk_Level Distribution (valid rows)**")
+                    st.bar_chart(df_cm["Risk_Level"].value_counts())
+                with col2:
+                    st.markdown("**Predicted Risk_Level Distribution (valid rows)**")
+                    st.bar_chart(df_cm["Pred_Risk_Level"].value_counts())
+
+                st.markdown(
+                    """
+                    **Additional interpretation**
+
+                    - Comparing the actual and predicted distributions shows whether the model is
+                      **over-assigning** or **under-assigning** certain levels (for example, predicting too many *Medium* cases).  
+                    - This helps you argue whether the classifier is conservative or aggressive in labeling high-risk situations.
+                    """
+                )
         else:
             st.warning(
                 "Columns `Risk_Level` and/or `Pred_Risk_Level` are missing. "
