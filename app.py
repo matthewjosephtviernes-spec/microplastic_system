@@ -442,7 +442,8 @@ elif selected_tab == tabs[2]:
 
     st.session_state.df = df_prep
     st.session_state.preprocessed = True
-    # IMPORTANT: We do NOT clear df_with_preds / best_model_name here.
+    # IMPORTANT: don't clear df_with_preds / best_model_name here,
+    # so predictions remain for visualization after running Step 4.
 
     st.success("✅ Data preprocessing complete!")
 
@@ -817,15 +818,21 @@ elif selected_tab == tabs[5]:
         """
     )
 
-    # ✅ Always show ALL options (including predicted vs actual)
     vis_options = [
         "Risk Score Distribution",
         "Risk Score vs MP_Count_per_L",
         "Risk Score by Risk Level (Actual)",
         "Class Distribution (Risk_Type & Risk_Level – Actual)",
-        "Predicted vs Actual Risk_Type",
-        "Predicted vs Actual Risk_Level",
     ]
+
+    # Only add prediction-based options if we have them
+    if "Pred_Risk_Type" in df_vis.columns and "Pred_Risk_Level" in df_vis.columns:
+        vis_options.extend(
+            [
+                "Predicted vs Actual Risk_Type",
+                "Predicted vs Actual Risk_Level",
+            ]
+        )
 
     vis_choice = st.sidebar.selectbox("Visualization type:", vis_options)
 
@@ -920,6 +927,7 @@ elif selected_tab == tabs[5]:
         st.subheader("Predicted vs Actual Risk_Type")
 
         if "Pred_Risk_Type" in df_vis.columns and "Risk_Type" in df_vis.columns:
+            # Confusion matrix
             cm = pd.crosstab(
                 df_vis["Risk_Type"],
                 df_vis["Pred_Risk_Type"],
@@ -947,6 +955,7 @@ elif selected_tab == tabs[5]:
                 """
             )
 
+            # Distribution comparison
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**Actual Risk_Type Distribution**")
@@ -964,10 +973,7 @@ elif selected_tab == tabs[5]:
                 """
             )
         else:
-            st.warning(
-                "Walay nakit-ang columns `Risk_Type` ug/og `Pred_Risk_Type`. "
-                "Siguroha nga na-run nimo ang **Step 4 – Predictive Modeling & Validation**."
-            )
+            st.warning("Predicted and/or actual Risk_Type columns not found.")
 
     elif vis_choice == "Predicted vs Actual Risk_Level":
         st.subheader("Predicted vs Actual Risk_Level")
@@ -1016,10 +1022,7 @@ elif selected_tab == tabs[5]:
                 """
             )
         else:
-            st.warning(
-                "Walay nakit-ang columns `Risk_Level` ug/og `Pred_Risk_Level`. "
-                "Siguroha nga na-run nimo ang **Step 4 – Predictive Modeling & Validation**."
-            )
+            st.warning("Predicted and/or actual Risk_Level columns not found.")
 
     card_close()
 
