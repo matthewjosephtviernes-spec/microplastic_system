@@ -163,7 +163,7 @@ st.markdown(
     /* FOOTER BADGE */
     .footer {
         text-align: center;
-        color: var(--text-muted);
+        color: #476f5a;
         font-size: 0.78rem;
         margin-top: 1.0rem;
         padding-bottom: 0.7rem;
@@ -340,7 +340,7 @@ elif selected_tab == tabs[1]:
                 """
                 **How to interpret**
 
-                - *Rows* = number of sampling records / literature entries.  
+                - *Rows* = number of sampling records or literature entries.  
                 - *Columns* = number of variables (risk drivers, location, scores, etc.).  
                 - Check if the key variables (e.g., **Risk_Type**, **Risk_Level**, counts, location) are present.
                 """
@@ -442,8 +442,7 @@ elif selected_tab == tabs[2]:
 
     st.session_state.df = df_prep
     st.session_state.preprocessed = True
-    # IMPORTANT: don't clear df_with_preds / best_model_name here,
-    # so predictions remain for visualization after running Step 4.
+    # Do NOT clear df_with_preds / best_model_name here, so predictions stay valid.
 
     st.success("✅ Data preprocessing complete!")
 
@@ -657,7 +656,7 @@ elif selected_tab == tabs[4]:
     st.write(f"X_train shape: {X_train.shape}")
     st.write(f"X_test shape: {X_test.shape}")
     st.caption(
-        "About 80% of the data is used for training and 20% for testing, "
+        "Around 80% of the data is used for training and 20% for testing, "
         "which allows us to evaluate how well the model generalizes to unseen data."
     )
 
@@ -679,16 +678,24 @@ elif selected_tab == tabs[4]:
             model_t.fit(X_train, y_train_type)
             pred_type = model_t.predict(X_test)
 
-            st.markdown("### Performance on Risk_Type (Test Set)")
             acc_t = accuracy_score(y_test_type, pred_type)
             prec_t = precision_score(y_test_type, pred_type, average="weighted", zero_division=0)
             rec_t = recall_score(y_test_type, pred_type, average="weighted", zero_division=0)
             f1_t = f1_score(y_test_type, pred_type, average="weighted", zero_division=0)
 
-            st.write("Accuracy:", acc_t)
-            st.write("Precision:", prec_t)
-            st.write("Recall:", rec_t)
-            st.write("F1 Score:", f1_t)
+            st.markdown("### Performance on Risk_Type (Test Set)")
+            df_metrics_type = pd.DataFrame(
+                {
+                    "Metric": [
+                        "Accuracy",
+                        "Precision (weighted)",
+                        "Recall (weighted)",
+                        "F1-score (weighted)",
+                    ],
+                    "Score": [acc_t, prec_t, rec_t, f1_t],
+                }
+            )
+            st.table(df_metrics_type.set_index("Metric"))
 
             st.caption(
                 """
@@ -704,16 +711,24 @@ elif selected_tab == tabs[4]:
             model_l.fit(X_train, y_train_level)
             pred_level = model_l.predict(X_test)
 
-            st.markdown("### Performance on Risk_Level (Test Set)")
             acc_l = accuracy_score(y_test_level, pred_level)
             prec_l = precision_score(y_test_level, pred_level, average="weighted", zero_division=0)
             rec_l = recall_score(y_test_level, pred_level, average="weighted", zero_division=0)
             f1_l = f1_score(y_test_level, pred_level, average="weighted", zero_division=0)
 
-            st.write("Accuracy:", acc_l)
-            st.write("Precision:", prec_l)
-            st.write("Recall:", rec_l)
-            st.write("F1 Score:", f1_l)
+            st.markdown("### Performance on Risk_Level (Test Set)")
+            df_metrics_level = pd.DataFrame(
+                {
+                    "Metric": [
+                        "Accuracy",
+                        "Precision (weighted)",
+                        "Recall (weighted)",
+                        "F1-score (weighted)",
+                    ],
+                    "Score": [acc_l, prec_l, rec_l, f1_l],
+                }
+            )
+            st.table(df_metrics_level.set_index("Metric"))
 
             st.caption(
                 """
@@ -737,7 +752,7 @@ elif selected_tab == tabs[4]:
 
                 st.caption(
                     """
-                    Cross-validation repeats training/testing on multiple folds of the data.
+                    Cross-validation repeats training and testing on multiple folds of the data.
                     A **high mean CV accuracy with small variation** indicates a **stable and robust** model.
                     """
                 )
@@ -802,8 +817,8 @@ elif selected_tab == tabs[5]:
 
     if st.session_state.df_with_preds is None:
         st.warning(
-            "Wala pa tay stored predictions. Run **Step 4 – Predictive Modeling & Validation** "
-            "para makuha ang predicted Risk_Type ug Risk_Level."
+            "There are no stored predictions yet. Run **Step 4 – Predictive Modeling & Validation** "
+            "to generate predicted Risk_Type and Risk_Level."
         )
     else:
         st.success(f"Using predictions from best model: **{best_model_name}**.")
@@ -814,25 +829,19 @@ elif selected_tab == tabs[5]:
 
         - Provide **visual evidence** of microplastic risk patterns.  
         - Show how the **predicted risk types and levels** compare to the **actual labels**.  
-        - These plots are ideal for the **Results and Discussion** chapter (figures + narrative).
+        - These plots are ideal for the **Results and Discussion** chapter (figures plus narrative).
         """
     )
 
+    # Always show all options
     vis_options = [
         "Risk Score Distribution",
         "Risk Score vs MP_Count_per_L",
         "Risk Score by Risk Level (Actual)",
         "Class Distribution (Risk_Type & Risk_Level – Actual)",
+        "Predicted vs Actual Risk_Type",
+        "Predicted vs Actual Risk_Level",
     ]
-
-    # Only add prediction-based options if we have them
-    if "Pred_Risk_Type" in df_vis.columns and "Pred_Risk_Level" in df_vis.columns:
-        vis_options.extend(
-            [
-                "Predicted vs Actual Risk_Type",
-                "Predicted vs Actual Risk_Level",
-            ]
-        )
 
     vis_choice = st.sidebar.selectbox("Visualization type:", vis_options)
 
@@ -876,7 +885,7 @@ elif selected_tab == tabs[5]:
                 - Each point represents a sampling record.  
                 - An upward pattern (more points toward the upper-right) indicates that **higher microplastic counts**
                   are associated with **higher risk scores**.  
-                - Points that lie far from the main cloud may represent **unusual or extreme conditions** worth discussing.
+                - Points that lie far from the main cluster may represent **unusual or extreme conditions** worth discussing.
                 """
             )
         else:
@@ -927,7 +936,6 @@ elif selected_tab == tabs[5]:
         st.subheader("Predicted vs Actual Risk_Type")
 
         if "Pred_Risk_Type" in df_vis.columns and "Risk_Type" in df_vis.columns:
-            # Confusion matrix
             cm = pd.crosstab(
                 df_vis["Risk_Type"],
                 df_vis["Pred_Risk_Type"],
@@ -955,7 +963,6 @@ elif selected_tab == tabs[5]:
                 """
             )
 
-            # Distribution comparison
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**Actual Risk_Type Distribution**")
@@ -973,7 +980,10 @@ elif selected_tab == tabs[5]:
                 """
             )
         else:
-            st.warning("Predicted and/or actual Risk_Type columns not found.")
+            st.warning(
+                "Columns `Risk_Type` and/or `Pred_Risk_Type` are missing. "
+                "Make sure you have run **Step 4 – Predictive Modeling & Validation** successfully."
+            )
 
     elif vis_choice == "Predicted vs Actual Risk_Level":
         st.subheader("Predicted vs Actual Risk_Level")
@@ -1017,12 +1027,15 @@ elif selected_tab == tabs[5]:
                 """
                 **Interpretation of distributions**
 
-                - Check if the model **over-predicts a particular level** (e.g., too many records predicted as *Medium*).  
+                - Check if the model **over-predicts a particular level** (for example, too many records predicted as *Medium*).  
                 - This supports a discussion on whether the model is conservative or aggressive in assigning high risk.
                 """
             )
         else:
-            st.warning("Predicted and/or actual Risk_Level columns not found.")
+            st.warning(
+                "Columns `Risk_Level` and/or `Pred_Risk_Level` are missing. "
+                "Make sure you have run **Step 4 – Predictive Modeling & Validation** successfully."
+            )
 
     card_close()
 
