@@ -213,8 +213,10 @@ if "df_with_preds" not in st.session_state:
 if "best_model_name" not in st.session_state:
     st.session_state.best_model_name = None
 
-# Expected columns
+# Expected numeric columns
 num_cols = ["MP_Count_per_L", "Risk_Score", "Microplastic_Size_mm_midpoint", "Density_midpoint"]
+
+# IMPORTANT: do NOT include Risk_Type and Risk_Level here, so their names stay as labels
 cat_cols = [
     "Location",
     "Shape",
@@ -223,8 +225,6 @@ cat_cols = [
     "Salinity",
     "Industrial_Activity",
     "Population_Density",
-    "Risk_Type",
-    "Risk_Level",
     "Author",
 ]
 
@@ -385,7 +385,7 @@ elif selected_tab == tabs[2]:
         - Convert numeric columns to proper numeric types  
         - Handle missing values and outliers (IQR-based clipping)  
         - Apply log transforms for skewed numeric features  
-        - Encode categorical variables  
+        - Encode categorical variables (predictor variables only)  
         - Standardize numerical features  
         """
     )
@@ -399,6 +399,7 @@ elif selected_tab == tabs[2]:
     df_prep = df.copy()
     outlier_report = []
 
+    # Numeric preprocessing
     for col in num_cols:
         if col in df_prep.columns:
             df_prep[col] = pd.to_numeric(df_prep[col], errors="coerce")
@@ -425,6 +426,7 @@ elif selected_tab == tabs[2]:
                     f"skew_before={skew_before:.2f}, log_transform_applied={transform_applied}"
                 )
 
+    # Categorical preprocessing (predictors only; Risk_Type / Risk_Level are kept as names)
     for col in cat_cols:
         if col in df_prep.columns:
             try:
@@ -432,6 +434,7 @@ elif selected_tab == tabs[2]:
             except Exception:
                 pass
 
+    # Standardize numeric features
     scaler = StandardScaler()
     for col in num_cols:
         if col in df_prep.columns:
@@ -454,8 +457,8 @@ elif selected_tab == tabs[2]:
         **How to interpret**
 
         - Values may look different from the raw data because of **standardization** and **encoding**.  
-        - Categorical variables (e.g., *Location, Shape*) are now encoded as integers.  
-        - Numeric columns are scaled, which is important for algorithms that are sensitive to feature magnitude.
+        - Predictor categorical variables (e.g., *Location, Shape*) are now encoded as integers.  
+        - Target variables **Risk_Type** and **Risk_Level** remain as labels so they can be interpreted easily in the results.
         """
     )
 
@@ -485,7 +488,7 @@ elif selected_tab == tabs[3]:
 
     df_prep = st.session_state.df
 
-    # Treat these as numeric if present
+    # Try to treat these as numeric if present
     special_numeric = ["Latitude", "Longitude", "Microplastic_Size_mm", "Density"]
     for col in special_numeric:
         if col in df_prep.columns:
@@ -585,7 +588,7 @@ elif selected_tab == tabs[3]:
 
                     - Each bar corresponds to an encoded category.  
                     - Taller bars mean that category appears more frequently in the dataset.  
-                    - You can describe which categories dominate (e.g., most samples from a certain location or polymer type).
+                    - You can describe which categories dominate (for example, most samples from a certain location or polymer type).
                     """
                 )
     else:
@@ -845,52 +848,66 @@ elif selected_tab == tabs[5]:
 
     vis_choice = st.sidebar.selectbox("Visualization type:", vis_options)
 
+    # ---------- Risk Score Distribution ----------
     if vis_choice == "Risk Score Distribution":
         st.subheader("Risk Score Distribution")
         if "Risk_Score" in df_vis.columns:
+            rs = df_vis["Risk_Score"].dropna()
             fig, ax = plt.subplots()
-            sns.histplot(df_vis["Risk_Score"], kde=True, ax=ax, color="seagreen")
+            sns.histplot(rs, kde=True, ax=ax, color="seagreen")
             ax.set_xlabel("Risk_Score")
             ax.set_title("Distribution of Risk_Score")
             st.pyplot(fig)
             plt.close(fig)
 
+            mean_rs = rs.mean()
+            med_rs = rs.median()
+            min_rs = rs.min()
+            max_rs = rs.max()
+
             st.markdown(
-                """
+                f"""
                 **Interpretation**
 
-                - The shape of the distribution indicates whether risk scores are mostly **low**, **moderate**, or **high**.  
-                - A right-skewed distribution suggests that **few sites have extremely high risk**, while many are low.  
-                - You can describe the concentration of risk scores and discuss potential hotspots.
+                - Risk scores range from **{min_rs:.2f}** to **{max_rs:.2f}**, with an average value of about **{mean_rs:.2f}**  
+                  and a median of **{med_rs:.2f}**.  
+                - The overall shape of the distribution indicates whether most sampling sites are concentrated at low,
+                  moderate, or high risk levels.  
+                - A long right tail (many values on the far right) suggests a few **very high–risk** locations compared to the rest.
                 """
             )
         else:
             st.warning("Risk_Score column not found.")
 
+    # ---------- Risk Score vs MP_Count_per_L ----------
     elif vis_choice == "Risk Score vs MP_Count_per_L":
         st.subheader("Risk Score vs MP_Count_per_L")
         if "Risk_Score" in df_vis.columns and "MP_Count_per_L" in df_vis.columns:
+            sub = df_vis[["Risk_Score", "MP_Count_per_L"]].dropna()
             fig, ax = plt.subplots()
-            ax.scatter(df_vis["Risk_Score"], df_vis["MP_Count_per_L"], alpha=0.7, c="seagreen")
+            ax.scatter(sub["Risk_Score"], sub["MP_Count_per_L"], alpha=0.7, c="seagreen")
             ax.set_xlabel("Risk_Score")
             ax.set_ylabel("MP_Count_per_L")
             ax.set_title("Risk Score vs Microplastic Count per Liter")
             st.pyplot(fig)
             plt.close(fig)
 
+            corr = sub["Risk_Score"].corr(sub["MP_Count_per_L"])
             st.markdown(
-                """
+                f"""
                 **Interpretation**
 
-                - Each point represents a sampling record.  
-                - An upward pattern (more points toward the upper-right) indicates that **higher microplastic counts**
-                  are associated with **higher risk scores**.  
-                - Points that lie far from the main cluster may represent **unusual or extreme conditions** worth discussing.
+                - Each point represents one sampling record (risk score vs. microplastic count per liter).  
+                - The Pearson correlation between risk score and MP count is approximately **{corr:.2f}**.  
+                  Values close to +1 indicate a strong positive relationship, values near 0 indicate little or no linear relationship.  
+                - A positive correlation suggests that sites with higher microplastic counts tend to receive higher risk scores,
+                  which supports the validity of the scoring system.
                 """
             )
         else:
             st.warning("Required columns (Risk_Score, MP_Count_per_L) not found.")
 
+    # ---------- Risk Score by Risk Level (Actual) ----------
     elif vis_choice == "Risk Score by Risk Level (Actual)":
         st.subheader("Risk Score by Risk Level (Actual)")
         if "Risk_Score" in df_vis.columns and "Risk_Level" in df_vis.columns:
@@ -900,19 +917,46 @@ elif selected_tab == tabs[5]:
             st.pyplot(fig)
             plt.close(fig)
 
-            st.markdown(
-                """
-                **Interpretation**
+            # Dynamic interpretation using actual level names
+            try:
+                medians = df_vis.groupby("Risk_Level")["Risk_Score"].median().sort_values()
+                if not medians.empty:
+                    lowest_level = medians.index[0]
+                    highest_level = medians.index[-1]
+                    lowest_med = medians.iloc[0]
+                    highest_med = medians.iloc[-1]
+                    st.markdown(
+                        f"""
+                        **Interpretation**
 
-                - Each box corresponds to a risk level (e.g., **Low**, **Medium**, **High**).  
-                - Higher risk levels should generally have **higher median risk scores**.  
-                - Overlapping boxes suggest that the boundary between two levels is **not very clear**,  
-                  which is useful to mention when discussing classification difficulty.
-                """
-            )
+                        - The median risk score is lowest for **{lowest_level}** (≈ {lowest_med:.2f})  
+                          and highest for **{highest_level}** (≈ {highest_med:.2f}).  
+                        - This pattern indicates that the assigned risk levels are consistent with the numerical risk scores.  
+                        - If the boxes for two levels (e.g., *Medium* and *High*) overlap strongly, it suggests that the
+                          boundary between those levels may not be very sharp in the data.
+                        """
+                    )
+                else:
+                    st.markdown(
+                        """
+                        **Interpretation**
+
+                        - The risk score distribution by risk level cannot be summarized because no valid values were found.
+                        """
+                    )
+            except Exception:
+                st.markdown(
+                    """
+                    **Interpretation**
+
+                    - The distribution of risk scores by risk level shows whether higher levels
+                      generally correspond to higher scores.
+                    """
+                )
         else:
             st.warning("Required columns (Risk_Score, Risk_Level) not found.")
 
+    # ---------- Class Distribution (Risk_Type & Risk_Level – Actual) ----------
     elif vis_choice == "Class Distribution (Risk_Type & Risk_Level – Actual)":
         st.subheader("Class Distributions – Actual")
         for target in ["Risk_Type", "Risk_Level"]:
@@ -920,18 +964,36 @@ elif selected_tab == tabs[5]:
                 vc = df_vis[target].value_counts()
                 st.write(f"### {target} (Actual)")
                 st.bar_chart(vc)
-                st.markdown(
-                    f"""
-                    **Interpretation of {target}**
 
-                    - Bars show how many records fall into each class.  
-                    - Highly imbalanced classes (one bar much taller than others) make classification harder and may bias the model.  
-                    - Mention this when explaining why some classes have lower predictive performance.
-                    """
-                )
+                total = vc.sum()
+                if total > 0:
+                    main_class = vc.idxmax()
+                    main_count = vc.max()
+                    main_pct = (main_count / total) * 100
+                    st.markdown(
+                        f"""
+                        **Interpretation of {target}**
+
+                        - The most frequent {target.lower()} in the dataset is **{main_class}**,  
+                          with **{main_count}** records (≈ {main_pct:.1f}% of all cases).  
+                        - Classes with very few observations may be more difficult for the model to learn,
+                          which can lead to lower accuracy for those specific risk types or levels.  
+                        - In your discussion, you can highlight whether the dataset is dominated by
+                          certain risk categories (for example, mostly *medium* or *high* risk).
+                        """
+                    )
+                else:
+                    st.markdown(
+                        f"""
+                        **Interpretation of {target}**
+
+                        - No valid {target.lower()} values were found in the dataset.
+                        """
+                    )
             else:
                 st.warning(f"{target} not found in dataset.")
 
+    # ---------- Predicted vs Actual Risk_Type ----------
     elif vis_choice == "Predicted vs Actual Risk_Type":
         st.subheader("Predicted vs Actual Risk_Type")
 
@@ -952,17 +1014,36 @@ elif selected_tab == tabs[5]:
             st.pyplot(fig)
             plt.close(fig)
 
-            st.markdown(
-                """
-                **How to read this confusion matrix**
+            # Dynamic interpretation
+            try:
+                overall_acc = accuracy_score(df_vis["Risk_Type"], df_vis["Pred_Risk_Type"])
+                vc_actual = df_vis["Risk_Type"].value_counts()
+                vc_pred = df_vis["Pred_Risk_Type"].value_counts()
+                top_actual = vc_actual.idxmax() if not vc_actual.empty else None
+                top_pred = vc_pred.idxmax() if not vc_pred.empty else None
 
-                - Each **row** = actual risk type; each **column** = predicted risk type.  
-                - High values along the **diagonal** (top-left to bottom-right) mean the model often predicts the correct class.  
-                - Large values outside the diagonal indicate **systematic misclassification** between specific risk types,
-                  which you can discuss as limitations.
-                """
-            )
+                st.markdown(
+                    f"""
+                    **Interpretation**
 
+                    - The overall accuracy for predicting **Risk_Type** on the full dataset is approximately **{overall_acc:.2%}**.  
+                    - The most common actual risk type is **{top_actual}**, while the most frequently predicted type is **{top_pred}**.  
+                    - Cells along the diagonal of the confusion matrix (where *Actual = Predicted*) represent **correct classifications**.  
+                    - Large values outside the diagonal indicate **systematic confusion** between specific risk types
+                      (for example, ecological risk misclassified as human health risk), which you can discuss as model limitations.
+                    """
+                )
+            except Exception:
+                st.markdown(
+                    """
+                    **Interpretation**
+
+                    - High values along the diagonal indicate that the model correctly identifies most risk types.  
+                    - Off-diagonal cells represent misclassifications, which are important to discuss when assessing model reliability.
+                    """
+                )
+
+            # Distribution comparison
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**Actual Risk_Type Distribution**")
@@ -973,10 +1054,11 @@ elif selected_tab == tabs[5]:
 
             st.markdown(
                 """
-                **Interpretation of distributions**
+                **Additional interpretation**
 
-                - Compare whether the **predicted distribution** roughly follows the **actual distribution**.  
-                - If a certain risk type is **under-predicted or over-predicted**, it will be visible here.
+                - If the predicted distribution is more concentrated in a single risk type than the actual distribution,
+                  the model may be **over-predicting** that category.  
+                - This helps explain whether the classifier is conservative or biased toward particular risk types.
                 """
             )
         else:
@@ -985,6 +1067,7 @@ elif selected_tab == tabs[5]:
                 "Make sure you have run **Step 4 – Predictive Modeling & Validation** successfully."
             )
 
+    # ---------- Predicted vs Actual Risk_Level ----------
     elif vis_choice == "Predicted vs Actual Risk_Level":
         st.subheader("Predicted vs Actual Risk_Level")
 
@@ -1005,15 +1088,36 @@ elif selected_tab == tabs[5]:
             st.pyplot(fig)
             plt.close(fig)
 
-            st.markdown(
-                """
-                **How to read this confusion matrix**
+            # Dynamic interpretation
+            try:
+                overall_acc = accuracy_score(df_vis["Risk_Level"], df_vis["Pred_Risk_Level"])
+                vc_actual = df_vis["Risk_Level"].value_counts()
+                vc_pred = df_vis["Pred_Risk_Level"].value_counts()
+                top_actual = vc_actual.idxmax() if not vc_actual.empty else None
+                top_pred = vc_pred.idxmax() if not vc_pred.empty else None
 
-                - High diagonal values mean the classifier can correctly distinguish between **Low**, **Medium**, and **High** risk levels.  
-                - For example, if many **High** risk records are predicted as **Medium**, the model tends to **underestimate high risk**,  
-                  which is important for management decisions.
-                """
-            )
+                st.markdown(
+                    f"""
+                    **Interpretation**
+
+                    - The overall accuracy for predicting **Risk_Level** is approximately **{overall_acc:.2%}**.  
+                    - The most common actual level is **{top_actual}**, while the most frequently predicted level is **{top_pred}**.  
+                    - A strong diagonal pattern (most counts on the diagonal) indicates that the model can distinguish
+                      between **Low**, **Medium**, and **High** risk levels reasonably well.  
+                    - If many *High* risk cases are predicted as *Medium*, the model tends to **underestimate high risk**,
+                      which you should mention when discussing potential management implications.
+                    """
+                )
+            except Exception:
+                st.markdown(
+                    """
+                    **Interpretation**
+
+                    - Correct predictions appear on the diagonal of the matrix, while off-diagonal cells represent misclassified levels.  
+                    - Concentrated errors between two levels (for example, many *Medium* cases predicted as *Low*)
+                      suggest that the boundary between these levels is not very clear for the model.
+                    """
+                )
 
             col1, col2 = st.columns(2)
             with col1:
@@ -1025,10 +1129,11 @@ elif selected_tab == tabs[5]:
 
             st.markdown(
                 """
-                **Interpretation of distributions**
+                **Additional interpretation**
 
-                - Check if the model **over-predicts a particular level** (for example, too many records predicted as *Medium*).  
-                - This supports a discussion on whether the model is conservative or aggressive in assigning high risk.
+                - Comparing the actual and predicted distributions shows whether the model is
+                  **over-assigning** or **under-assigning** certain levels (for example, predicting too many *Medium* cases).  
+                - This helps you argue whether the classifier is conservative or aggressive in labeling high-risk situations.
                 """
             )
         else:
