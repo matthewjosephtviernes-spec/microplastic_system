@@ -208,6 +208,10 @@ if "raw_df" not in st.session_state:
     st.session_state.raw_df = None
 if "preprocessed" not in st.session_state:
     st.session_state.preprocessed = False
+if "df_with_preds" not in st.session_state:
+    st.session_state.df_with_preds = None
+if "best_model_name" not in st.session_state:
+    st.session_state.best_model_name = None
 
 # Expected columns
 num_cols = ["MP_Count_per_L", "Risk_Score", "Microplastic_Size_mm_midpoint", "Density_midpoint"]
@@ -277,7 +281,7 @@ if selected_tab == tabs[0]:
         2. **Data Preprocessing** – Clean, transform, and encode the data.  
         3. **Preprocessed Data Results** – Inspect the model-ready dataset.  
         4. **Predictive Modeling & Validation** – Train and compare models.  
-        5. **Risk Visualizations & Interpretation** – Explore and interpret risk patterns.
+        5. **Risk Visualizations & Interpretation** – Explore and interpret risk patterns, including **predicted risk types/levels**.
         """
     )
 
@@ -313,6 +317,8 @@ elif selected_tab == tabs[1]:
             st.session_state.raw_df = raw_df.copy()
             st.session_state.df = raw_df.copy()
             st.session_state.preprocessed = False
+            st.session_state.df_with_preds = None
+            st.session_state.best_model_name = None
 
             st.success("✅ Dataset uploaded successfully!")
 
@@ -417,6 +423,8 @@ elif selected_tab == tabs[2]:
 
     st.session_state.df = df_prep
     st.session_state.preprocessed = True
+    st.session_state.df_with_preds = None
+    st.session_state.best_model_name = None
 
     st.success("✅ Data preprocessing complete!")
 
@@ -449,9 +457,7 @@ elif selected_tab == tabs[3]:
 
     df_prep = st.session_state.df
 
-    # 🔧 IMPORTANT FIX:
-    # Treat Latitude / Longitude / Microplastic_Size_mm / Density as NUMERIC,
-    # so they won't be plotted as crazy categorical bars with overlapping labels.
+    # Treat these as numeric
     special_numeric = ["Latitude", "Longitude", "Microplastic_Size_mm", "Density"]
     for col in special_numeric:
         if col in df_prep.columns:
@@ -466,7 +472,7 @@ elif selected_tab == tabs[3]:
         """
     )
 
-    # 1. Dataset Overview
+    # 1. Overview
     st.subheader("1. Dataset Overview After Preprocessing")
     n_rows, n_cols = df_prep.shape
     numeric_cols_present = df_prep.select_dtypes(include=[np.number]).columns.tolist()
@@ -480,7 +486,7 @@ elif selected_tab == tabs[3]:
     st.markdown("**Sample of final preprocessed data (first 20 rows):**")
     st.dataframe(df_prep.head(20), use_container_width=True)
 
-    # 2. Numeric Summary (includes Latitude, Longitude, Microplastic_Size_mm, Density now)
+    # 2. Numeric summary
     st.subheader("2. Numeric Feature Summary")
     if numeric_cols_present:
         st.dataframe(df_prep[numeric_cols_present].describe(), use_container_width=True)
@@ -497,7 +503,7 @@ elif selected_tab == tabs[3]:
     else:
         st.info("No numeric columns found in the preprocessed dataset.")
 
-    # 3. Encoded categorical summary (Latitude/Longitude/Size/Density already removed here)
+    # 3. Encoded categorical
     st.subheader("3. Encoded Categorical Feature Summary")
     if categorical_cols_present:
         for col in categorical_cols_present:
@@ -505,7 +511,6 @@ elif selected_tab == tabs[3]:
             with st.expander(f"Distribution for {col}"):
                 st.dataframe(vc, use_container_width=True)
 
-                # For columns with too many categories, only show top 20 to keep chart readable
                 if len(vc) > 20:
                     vc_plot = vc.head(20)
                     st.caption("Showing top 20 categories by frequency.")
@@ -516,7 +521,7 @@ elif selected_tab == tabs[3]:
     else:
         st.info("No categorical/encoded columns found.")
 
-    # 4. Missing value check
+    # 4. Missing values
     st.subheader("4. Missing Value Assessment")
     total_missing = int(df_prep.isna().sum().sum())
     if total_missing == 0:
@@ -550,10 +555,12 @@ elif selected_tab == tabs[4]:
 
     st.markdown(
         """
-        Train classification models to predict:
+        We train classification models to predict:
 
         - **Risk_Type** (e.g., ecological, human health, etc.)  
         - **Risk_Level** (e.g., low, medium, high)  
+
+        and we will later visualize the **predicted classes** in Step 5.
         """
     )
 
@@ -581,11 +588,13 @@ elif selected_tab == tabs[4]:
     }
 
     model_tabs = st.tabs(models.keys())
+    cv_mean_scores = {}
 
     for (model_name, model), tab_model in zip(models.items(), model_tabs):
         with tab_model:
             st.subheader(f"Model: {model_name}")
 
+            # --- Risk_Type ---
             model_t = clone(model)
             model_t.fit(X_train, y_train_type)
             pred_type = model_t.predict(X_test)
@@ -605,6 +614,7 @@ elif selected_tab == tabs[4]:
                 f1_score(y_test_type, pred_type, average="weighted", zero_division=0),
             )
 
+            # --- Risk_Level ---
             model_l = clone(model)
             model_l.fit(X_train, y_train_level)
             pred_level = model_l.predict(X_test)
@@ -624,19 +634,50 @@ elif selected_tab == tabs[4]:
                 f1_score(y_test_level, pred_level, average="weighted", zero_division=0),
             )
 
+            # --- Cross Validation on Risk_Type ---
             st.markdown("### K-Fold Cross Validation (Risk_Type)")
             try:
                 kf = KFold(n_splits=5, shuffle=True, random_state=42)
                 cv_scores = cross_val_score(clone(model), X, y_type, cv=kf, scoring="accuracy")
+                cv_mean = cv_scores.mean()
+                cv_mean_scores[model_name] = cv_mean
+
                 st.write(f"CV Scores: {cv_scores}")
-                st.write(f"Mean CV accuracy: {cv_scores.mean():.3f} ± {cv_scores.std():.3f}")
+                st.write(f"Mean CV accuracy: {cv_mean:.3f} ± {cv_scores.std():.3f}")
                 st.bar_chart(cv_scores)
             except Exception as e:
                 st.error(f"Cross-validation failed: {e}")
 
-    st.info(
-        "Use these metrics and model comparisons in your **Results & Discussion** chapter."
-    )
+    # Choose best model by mean CV accuracy and generate predictions for full dataset
+    if cv_mean_scores:
+        best_model_name = max(cv_mean_scores, key=cv_mean_scores.get)
+        best_model = models[best_model_name]
+
+        st.session_state.best_model_name = best_model_name
+
+        st.markdown("---")
+        st.success(
+            f"📌 Best model based on CV accuracy: **{best_model_name}**. "
+            "Generating predictions on the full dataset for visualization..."
+        )
+
+        # Train on full data for Risk_Type and Risk_Level
+        best_model_type = clone(best_model).fit(X, y_type)
+        best_model_level = clone(best_model).fit(X, y_level)
+
+        df_with_preds = df.copy()
+        df_with_preds["Pred_Risk_Type"] = best_model_type.predict(X)
+        df_with_preds["Pred_Risk_Level"] = best_model_level.predict(X)
+
+        st.session_state.df_with_preds = df_with_preds
+
+        st.info(
+            "Predicted **Risk_Type** and **Risk_Level** are now stored and can be visualized "
+            "in **Step 5 – Risk Visualizations & Interpretation**."
+        )
+    else:
+        st.warning("Could not compute cross-validation scores; predictions for Step 5 were not generated.")
+
     card_close()
 
 # =========================
@@ -652,26 +693,48 @@ elif selected_tab == tabs[5]:
         card_close()
         st.stop()
 
+    # If predictions exist, use df_with_preds; otherwise, just use df
+    df_vis = st.session_state.df_with_preds if st.session_state.df_with_preds is not None else df
+    best_model_name = st.session_state.best_model_name
+
+    if st.session_state.df_with_preds is None:
+        st.warning(
+            "Wala pa tay stored predictions. Run **Step 4 – Predictive Modeling & Validation** "
+            "para makuha ang predicted Risk_Type ug Risk_Level."
+        )
+    else:
+        st.success(f"Using predictions from best model: **{best_model_name}**.")
+
     st.markdown(
         """
-        Visualize risk patterns to support your **Results and Discussion**.
-        Choose a visualization from the sidebar.
+        Visualize both **raw risk patterns** and, when available, the **predicted risk types / levels**
+        from the best-performing classification model.
         """
     )
 
     vis_options = [
         "Risk Score Distribution",
         "Risk Score vs MP_Count_per_L",
-        "Risk Score by Risk Level",
-        "Class Distribution (Risk_Type & Risk_Level)",
+        "Risk Score by Risk Level (Actual)",
+        "Class Distribution (Risk_Type & Risk_Level – Actual)",
     ]
+
+    # Only add prediction-based options if we have them
+    if "Pred_Risk_Type" in df_vis.columns and "Pred_Risk_Level" in df_vis.columns:
+        vis_options.extend(
+            [
+                "Predicted vs Actual Risk_Type",
+                "Predicted vs Actual Risk_Level",
+            ]
+        )
+
     vis_choice = st.sidebar.selectbox("Visualization type:", vis_options)
 
     if vis_choice == "Risk Score Distribution":
         st.subheader("Risk Score Distribution")
-        if "Risk_Score" in df.columns:
+        if "Risk_Score" in df_vis.columns:
             fig, ax = plt.subplots()
-            sns.histplot(df["Risk_Score"], kde=True, ax=ax, color="seagreen")
+            sns.histplot(df_vis["Risk_Score"], kde=True, ax=ax, color="seagreen")
             ax.set_xlabel("Risk_Score")
             ax.set_title("Distribution of Risk_Score")
             st.pyplot(fig)
@@ -681,9 +744,9 @@ elif selected_tab == tabs[5]:
 
     elif vis_choice == "Risk Score vs MP_Count_per_L":
         st.subheader("Risk Score vs MP_Count_per_L")
-        if "Risk_Score" in df.columns and "MP_Count_per_L" in df.columns:
+        if "Risk_Score" in df_vis.columns and "MP_Count_per_L" in df_vis.columns:
             fig, ax = plt.subplots()
-            ax.scatter(df["Risk_Score"], df["MP_Count_per_L"], alpha=0.7, c="seagreen")
+            ax.scatter(df_vis["Risk_Score"], df_vis["MP_Count_per_L"], alpha=0.7, c="seagreen")
             ax.set_xlabel("Risk_Score")
             ax.set_ylabel("MP_Count_per_L")
             ax.set_title("Risk Score vs Microplastic Count per Liter")
@@ -692,26 +755,89 @@ elif selected_tab == tabs[5]:
         else:
             st.warning("Required columns (Risk_Score, MP_Count_per_L) not found.")
 
-    elif vis_choice == "Risk Score by Risk Level":
-        st.subheader("Risk Score by Risk Level")
-        if "Risk_Score" in df.columns and "Risk_Level" in df.columns:
+    elif vis_choice == "Risk Score by Risk Level (Actual)":
+        st.subheader("Risk Score by Risk Level (Actual)")
+        if "Risk_Score" in df_vis.columns and "Risk_Level" in df_vis.columns:
             fig, ax = plt.subplots()
-            sns.boxplot(x="Risk_Level", y="Risk_Score", data=df, ax=ax, palette="Greens")
-            ax.set_title("Risk Score Distribution by Risk Level")
+            sns.boxplot(x="Risk_Level", y="Risk_Score", data=df_vis, ax=ax, palette="Greens")
+            ax.set_title("Risk Score Distribution by Risk Level (Actual)")
             st.pyplot(fig)
             plt.close(fig)
         else:
             st.warning("Required columns (Risk_Score, Risk_Level) not found.")
 
-    elif vis_choice == "Class Distribution (Risk_Type & Risk_Level)":
-        st.subheader("Class Distributions")
+    elif vis_choice == "Class Distribution (Risk_Type & Risk_Level – Actual)":
+        st.subheader("Class Distributions – Actual")
         for target in ["Risk_Type", "Risk_Level"]:
-            if target in df.columns:
-                vc = df[target].value_counts()
-                st.write(f"### {target}")
+            if target in df_vis.columns:
+                vc = df_vis[target].value_counts()
+                st.write(f"### {target} (Actual)")
                 st.bar_chart(vc)
             else:
                 st.warning(f"{target} not found in dataset.")
+
+    elif vis_choice == "Predicted vs Actual Risk_Type":
+        st.subheader("Predicted vs Actual Risk_Type")
+
+        if "Pred_Risk_Type" in df_vis.columns and "Risk_Type" in df_vis.columns:
+            # Confusion matrix
+            cm = pd.crosstab(
+                df_vis["Risk_Type"],
+                df_vis["Pred_Risk_Type"],
+                rownames=["Actual"],
+                colnames=["Predicted"],
+            )
+
+            st.markdown("**Confusion Matrix (Counts)**")
+            st.dataframe(cm)
+
+            fig, ax = plt.subplots(figsize=(6, 4))
+            sns.heatmap(cm, annot=True, fmt="d", cmap="Greens", ax=ax)
+            ax.set_title("Confusion Matrix – Risk_Type")
+            st.pyplot(fig)
+            plt.close(fig)
+
+            # Distribution comparison
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Actual Risk_Type Distribution**")
+                st.bar_chart(df_vis["Risk_Type"].value_counts())
+            with col2:
+                st.markdown("**Predicted Risk_Type Distribution**")
+                st.bar_chart(df_vis["Pred_Risk_Type"].value_counts())
+        else:
+            st.warning("Predicted and/or actual Risk_Type columns not found.")
+
+    elif vis_choice == "Predicted vs Actual Risk_Level":
+        st.subheader("Predicted vs Actual Risk_Level")
+
+        if "Pred_Risk_Level" in df_vis.columns and "Risk_Level" in df_vis.columns:
+            cm = pd.crosstab(
+                df_vis["Risk_Level"],
+                df_vis["Pred_Risk_Level"],
+                rownames=["Actual"],
+                colnames=["Predicted"],
+            )
+
+            st.markdown("**Confusion Matrix (Counts)**")
+            st.dataframe(cm)
+
+            fig, ax = plt.subplots(figsize=(6, 4))
+            sns.heatmap(cm, annot=True, fmt="d", cmap="Greens", ax=ax)
+            ax.set_title("Confusion Matrix – Risk_Level")
+            st.pyplot(fig)
+            plt.close(fig)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Actual Risk_Level Distribution**")
+                st.bar_chart(df_vis["Risk_Level"].value_counts())
+            with col2:
+                st.markdown("**Predicted Risk_Level Distribution**")
+                st.bar_chart(df_vis["Pred_Risk_Level"].value_counts())
+        else:
+            st.warning("Predicted and/or actual Risk_Level columns not found.")
+
     card_close()
 
 # Footer
