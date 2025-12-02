@@ -320,6 +320,7 @@ elif selected_tab == tabs[1]:
             st.session_state.raw_df = raw_df.copy()
             st.session_state.df = raw_df.copy()
             st.session_state.preprocessed = False
+            # New dataset → reset models & predictions
             st.session_state.df_with_preds = None
             st.session_state.best_model_name = None
 
@@ -441,8 +442,8 @@ elif selected_tab == tabs[2]:
 
     st.session_state.df = df_prep
     st.session_state.preprocessed = True
-    st.session_state.df_with_preds = None
-    st.session_state.best_model_name = None
+    # IMPORTANT: don't clear df_with_preds / best_model_name here,
+    # so predictions remain for visualization after running Step 4.
 
     st.success("✅ Data preprocessing complete!")
 
@@ -485,7 +486,7 @@ elif selected_tab == tabs[3]:
 
     df_prep = st.session_state.df
 
-    # Treat these as numeric
+    # Treat these as numeric if present
     special_numeric = ["Latitude", "Longitude", "Microplastic_Size_mm", "Density"]
     for col in special_numeric:
         if col in df_prep.columns:
