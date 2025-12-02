@@ -281,13 +281,13 @@ if selected_tab == tabs[0]:
         2. **Data Preprocessing** – Clean, transform, and encode the data.  
         3. **Preprocessed Data Results** – Inspect the model-ready dataset.  
         4. **Predictive Modeling & Validation** – Train and compare models.  
-        5. **Risk Visualizations & Interpretation** – Explore and interpret risk patterns, including **predicted risk types/levels**.
+        5. **Risk Visualizations & Interpretation** – Explore and interpret **actual and predicted risk patterns**.
         """
     )
 
     st.info(
         "Begin with **'1. Data Upload & Description'** using the sidebar navigation. "
-        "Each step builds on the previous one."
+        "Each step corresponds to a part of your methodology chapter."
     )
     card_close()
 
@@ -300,7 +300,10 @@ elif selected_tab == tabs[1]:
 
     st.markdown(
         """
-        Upload the **structured dataset** of microplastic pollution risk derived from your literature review or field data.
+        **Purpose of this step**
+
+        - Import the **final structured dataset** on microplastic pollution.  
+        - Make sure all variables to be used in preprocessing and modeling are present.
 
         Accepted formats: **CSV** or **Excel (.xlsx)**.
         """
@@ -332,6 +335,16 @@ elif selected_tab == tabs[1]:
                 st.write("**Column names:**")
                 st.write(list(raw_df.columns))
 
+            st.markdown(
+                """
+                **How to interpret**
+
+                - *Rows* = number of sampling records / literature entries.  
+                - *Columns* = number of variables (risk drivers, location, scores, etc.).  
+                - Check if the key variables (e.g., **Risk_Type**, **Risk_Level**, counts, location) are present.
+                """
+            )
+
             st.subheader("Preview (First 10 Rows)")
             st.dataframe(raw_df.head(10), use_container_width=True)
 
@@ -361,7 +374,12 @@ elif selected_tab == tabs[2]:
 
     st.markdown(
         """
-        This step prepares your dataset for machine learning:
+        **Purpose of this step**
+
+        - Prepare the raw data so that it is **clean, consistent, and suitable** for machine learning.  
+        - This corresponds to the **data preparation / KDD preprocessing** phase in your methodology.
+
+        Operations applied:
 
         - Convert numeric columns to proper numeric types  
         - Handle missing values and outliers (IQR-based clipping)  
@@ -431,6 +449,16 @@ elif selected_tab == tabs[2]:
     st.subheader("Preprocessed Dataset (First 10 Rows)")
     st.dataframe(df_prep.head(10), use_container_width=True)
 
+    st.markdown(
+        """
+        **How to interpret**
+
+        - Values may look different from the raw data because of **standardization** and **encoding**.  
+        - Categorical variables (e.g., *Location, Shape*) are now encoded as integers.  
+        - Numeric columns are scaled, which is important for algorithms that are sensitive to feature magnitude.
+        """
+    )
+
     with st.expander("Preprocessing Log (Outliers & Transforms)"):
         if outlier_report:
             for line in outlier_report:
@@ -468,7 +496,8 @@ elif selected_tab == tabs[3]:
 
     st.markdown(
         """
-        Verify that the **preprocessed dataset** is ready for modeling.
+        This step **summarizes** the preprocessed dataset so that you can describe it in the
+        **Results – Data Description** section of your thesis.
         """
     )
 
@@ -486,10 +515,25 @@ elif selected_tab == tabs[3]:
     st.markdown("**Sample of final preprocessed data (first 20 rows):**")
     st.dataframe(df_prep.head(20), use_container_width=True)
 
+    st.caption(
+        "Use this table to show an example of how the cleaned, encoded dataset looks like "
+        "before feeding it into the predictive models."
+    )
+
     # 2. Numeric summary
     st.subheader("2. Numeric Feature Summary")
     if numeric_cols_present:
         st.dataframe(df_prep[numeric_cols_present].describe(), use_container_width=True)
+
+        st.markdown(
+            """
+            **How to interpret**
+
+            - `mean` and `std` describe the **central tendency and variability** of each numeric feature.  
+            - `min`, `25%`, `50%`, `75%`, `max` show the **spread** and potential outliers.  
+            - You can cite these numbers when describing ranges of microplastic counts, sizes, risk scores, etc.
+            """
+        )
 
         st.markdown("**Inspect distribution of a selected numeric feature:**")
         selected_num = st.selectbox("Choose a numeric column:", numeric_cols_present)
@@ -500,12 +544,28 @@ elif selected_tab == tabs[3]:
         axes[1].set_title(f"{selected_num} – Boxplot")
         st.pyplot(fig)
         plt.close(fig)
+
+        st.markdown(
+            f"""
+            **Interpretation of {selected_num} plots**
+
+            - The **histogram** shows how frequent each range of values appears.  
+            - The **boxplot** shows the median (line inside the box), the spread (box width), and potential outliers (points).  
+            - Skewed histograms or many outliers may indicate that the variable needs transformation or careful discussion.
+            """
+        )
     else:
         st.info("No numeric columns found in the preprocessed dataset.")
 
     # 3. Encoded categorical
     st.subheader("3. Encoded Categorical Feature Summary")
     if categorical_cols_present:
+        st.markdown(
+            """
+            These plots describe the **frequency** of categories after encoding.
+            Use them to report how many samples belong to each location, polymer type, risk level, etc.
+            """
+        )
         for col in categorical_cols_present:
             vc = get_value_counts_for_column(df_prep, col)
             with st.expander(f"Distribution for {col}"):
@@ -518,6 +578,16 @@ elif selected_tab == tabs[3]:
                     vc_plot = vc
 
                 plot_value_counts_bar(vc_plot, x_col=col, title=f"{col} Encoded Distribution")
+
+                st.markdown(
+                    f"""
+                    **How to interpret {col} distribution**
+
+                    - Each bar corresponds to an encoded category.  
+                    - Taller bars mean that category appears more frequently in the dataset.  
+                    - You can describe which categories dominate (e.g., most samples from a certain location or polymer type).
+                    """
+                )
     else:
         st.info("No categorical/encoded columns found.")
 
@@ -529,9 +599,13 @@ elif selected_tab == tabs[3]:
     else:
         st.warning(f"There are {total_missing} missing values left.")
         st.dataframe(df_prep.isna().sum().to_frame("missing_count"))
+        st.caption(
+            "Columns with remaining missing values may require additional imputation or careful interpretation."
+        )
 
     st.info(
-        "Proceed to **'4. Predictive Modeling & Validation'** using the sidebar navigation."
+        "Proceed to **'4. Predictive Modeling & Validation'** using the sidebar navigation "
+        "to train and compare classification models."
     )
     card_close()
 
@@ -555,12 +629,13 @@ elif selected_tab == tabs[4]:
 
     st.markdown(
         """
-        We train classification models to predict:
+        **Purpose of this step**
 
-        - **Risk_Type** (e.g., ecological, human health, etc.)  
-        - **Risk_Level** (e.g., low, medium, high)  
-
-        and we will later visualize the **predicted classes** in Step 5.
+        - Build **classification models** to predict:  
+          - `Risk_Type` (e.g., ecological, human health, etc.)  
+          - `Risk_Level` (e.g., low, medium, high)  
+        - Evaluate their performance using **accuracy**, **precision**, **recall**, **F1-score**, and **cross-validation**.  
+        - Select the **best model** and generate predictions for visualization in Step 5.
         """
     )
 
@@ -580,6 +655,10 @@ elif selected_tab == tabs[4]:
     st.subheader("Train–Test Split")
     st.write(f"X_train shape: {X_train.shape}")
     st.write(f"X_test shape: {X_test.shape}")
+    st.caption(
+        "About 80% of the data is used for training and 20% for testing, "
+        "which allows us to evaluate how well the model generalizes to unseen data."
+    )
 
     models = {
         "Logistic Regression": LogisticRegression(max_iter=2000),
@@ -599,19 +678,24 @@ elif selected_tab == tabs[4]:
             model_t.fit(X_train, y_train_type)
             pred_type = model_t.predict(X_test)
 
-            st.markdown("### Performance on Risk_Type")
-            st.write("Accuracy:", accuracy_score(y_test_type, pred_type))
-            st.write(
-                "Precision:",
-                precision_score(y_test_type, pred_type, average="weighted", zero_division=0),
-            )
-            st.write(
-                "Recall:",
-                recall_score(y_test_type, pred_type, average="weighted", zero_division=0),
-            )
-            st.write(
-                "F1 Score:",
-                f1_score(y_test_type, pred_type, average="weighted", zero_division=0),
+            st.markdown("### Performance on Risk_Type (Test Set)")
+            acc_t = accuracy_score(y_test_type, pred_type)
+            prec_t = precision_score(y_test_type, pred_type, average="weighted", zero_division=0)
+            rec_t = recall_score(y_test_type, pred_type, average="weighted", zero_division=0)
+            f1_t = f1_score(y_test_type, pred_type, average="weighted", zero_division=0)
+
+            st.write("Accuracy:", acc_t)
+            st.write("Precision:", prec_t)
+            st.write("Recall:", rec_t)
+            st.write("F1 Score:", f1_t)
+
+            st.caption(
+                """
+                - **Accuracy**: overall percentage of correct predictions.  
+                - **Precision**: when the model predicts a given risk type, how often is it correct?  
+                - **Recall**: how many of the true risk types are captured by the model?  
+                - **F1-score**: balance between precision and recall (useful when classes are imbalanced).
+                """
             )
 
             # --- Risk_Level ---
@@ -619,19 +703,23 @@ elif selected_tab == tabs[4]:
             model_l.fit(X_train, y_train_level)
             pred_level = model_l.predict(X_test)
 
-            st.markdown("### Performance on Risk_Level")
-            st.write("Accuracy:", accuracy_score(y_test_level, pred_level))
-            st.write(
-                "Precision:",
-                precision_score(y_test_level, pred_level, average="weighted", zero_division=0),
-            )
-            st.write(
-                "Recall:",
-                recall_score(y_test_level, pred_level, average="weighted", zero_division=0),
-            )
-            st.write(
-                "F1 Score:",
-                f1_score(y_test_level, pred_level, average="weighted", zero_division=0),
+            st.markdown("### Performance on Risk_Level (Test Set)")
+            acc_l = accuracy_score(y_test_level, pred_level)
+            prec_l = precision_score(y_test_level, pred_level, average="weighted", zero_division=0)
+            rec_l = recall_score(y_test_level, pred_level, average="weighted", zero_division=0)
+            f1_l = f1_score(y_test_level, pred_level, average="weighted", zero_division=0)
+
+            st.write("Accuracy:", acc_l)
+            st.write("Precision:", prec_l)
+            st.write("Recall:", rec_l)
+            st.write("F1 Score:", f1_l)
+
+            st.caption(
+                """
+                Ideally, you want **high and balanced values** across accuracy, precision, recall,
+                and F1-score. Very high accuracy but low recall might indicate that the model
+                is ignoring minority risk classes.
+                """
             )
 
             # --- Cross Validation on Risk_Type ---
@@ -645,6 +733,13 @@ elif selected_tab == tabs[4]:
                 st.write(f"CV Scores: {cv_scores}")
                 st.write(f"Mean CV accuracy: {cv_mean:.3f} ± {cv_scores.std():.3f}")
                 st.bar_chart(cv_scores)
+
+                st.caption(
+                    """
+                    Cross-validation repeats training/testing on multiple folds of the data.
+                    A **high mean CV accuracy with small variation** indicates a **stable and robust** model.
+                    """
+                )
             except Exception as e:
                 st.error(f"Cross-validation failed: {e}")
 
@@ -658,7 +753,14 @@ elif selected_tab == tabs[4]:
         st.markdown("---")
         st.success(
             f"📌 Best model based on CV accuracy: **{best_model_name}**. "
-            "Generating predictions on the full dataset for visualization..."
+            "This model will be used to generate predicted Risk_Type and Risk_Level."
+        )
+
+        st.markdown(
+            """
+            The selected model has the **highest average cross-validated accuracy** and is therefore
+            considered the most reliable for predicting microplastic risk categories in this dataset.
+            """
         )
 
         # Train on full data for Risk_Type and Risk_Level
@@ -673,7 +775,7 @@ elif selected_tab == tabs[4]:
 
         st.info(
             "Predicted **Risk_Type** and **Risk_Level** are now stored and can be visualized "
-            "in **Step 5 – Risk Visualizations & Interpretation**."
+            "in **Step 5 – Risk Visualizations & Interpretation** to show classification performance."
         )
     else:
         st.warning("Could not compute cross-validation scores; predictions for Step 5 were not generated.")
@@ -707,8 +809,11 @@ elif selected_tab == tabs[5]:
 
     st.markdown(
         """
-        Visualize both **raw risk patterns** and, when available, the **predicted risk types / levels**
-        from the best-performing classification model.
+        **Purpose of this step**
+
+        - Provide **visual evidence** of microplastic risk patterns.  
+        - Show how the **predicted risk types and levels** compare to the **actual labels**.  
+        - These plots are ideal for the **Results and Discussion** chapter (figures + narrative).
         """
     )
 
@@ -739,6 +844,16 @@ elif selected_tab == tabs[5]:
             ax.set_title("Distribution of Risk_Score")
             st.pyplot(fig)
             plt.close(fig)
+
+            st.markdown(
+                """
+                **Interpretation**
+
+                - The shape of the distribution indicates whether risk scores are mostly **low**, **moderate**, or **high**.  
+                - A right-skewed distribution suggests that **few sites have extremely high risk**, while many are low.  
+                - You can describe the concentration of risk scores and discuss potential hotspots.
+                """
+            )
         else:
             st.warning("Risk_Score column not found.")
 
@@ -752,6 +867,17 @@ elif selected_tab == tabs[5]:
             ax.set_title("Risk Score vs Microplastic Count per Liter")
             st.pyplot(fig)
             plt.close(fig)
+
+            st.markdown(
+                """
+                **Interpretation**
+
+                - Each point represents a sampling record.  
+                - An upward pattern (more points toward the upper-right) indicates that **higher microplastic counts**
+                  are associated with **higher risk scores**.  
+                - Points that lie far from the main cloud may represent **unusual or extreme conditions** worth discussing.
+                """
+            )
         else:
             st.warning("Required columns (Risk_Score, MP_Count_per_L) not found.")
 
@@ -763,6 +889,17 @@ elif selected_tab == tabs[5]:
             ax.set_title("Risk Score Distribution by Risk Level (Actual)")
             st.pyplot(fig)
             plt.close(fig)
+
+            st.markdown(
+                """
+                **Interpretation**
+
+                - Each box corresponds to a risk level (e.g., **Low**, **Medium**, **High**).  
+                - Higher risk levels should generally have **higher median risk scores**.  
+                - Overlapping boxes suggest that the boundary between two levels is **not very clear**,  
+                  which is useful to mention when discussing classification difficulty.
+                """
+            )
         else:
             st.warning("Required columns (Risk_Score, Risk_Level) not found.")
 
@@ -773,6 +910,15 @@ elif selected_tab == tabs[5]:
                 vc = df_vis[target].value_counts()
                 st.write(f"### {target} (Actual)")
                 st.bar_chart(vc)
+                st.markdown(
+                    f"""
+                    **Interpretation of {target}**
+
+                    - Bars show how many records fall into each class.  
+                    - Highly imbalanced classes (one bar much taller than others) make classification harder and may bias the model.  
+                    - Mention this when explaining why some classes have lower predictive performance.
+                    """
+                )
             else:
                 st.warning(f"{target} not found in dataset.")
 
@@ -797,6 +943,17 @@ elif selected_tab == tabs[5]:
             st.pyplot(fig)
             plt.close(fig)
 
+            st.markdown(
+                """
+                **How to read this confusion matrix**
+
+                - Each **row** = actual risk type; each **column** = predicted risk type.  
+                - High values along the **diagonal** (top-left to bottom-right) mean the model often predicts the correct class.  
+                - Large values outside the diagonal indicate **systematic misclassification** between specific risk types,
+                  which you can discuss as limitations.
+                """
+            )
+
             # Distribution comparison
             col1, col2 = st.columns(2)
             with col1:
@@ -805,6 +962,15 @@ elif selected_tab == tabs[5]:
             with col2:
                 st.markdown("**Predicted Risk_Type Distribution**")
                 st.bar_chart(df_vis["Pred_Risk_Type"].value_counts())
+
+            st.markdown(
+                """
+                **Interpretation of distributions**
+
+                - Compare whether the **predicted distribution** roughly follows the **actual distribution**.  
+                - If a certain risk type is **under-predicted or over-predicted**, it will be visible here.
+                """
+            )
         else:
             st.warning("Predicted and/or actual Risk_Type columns not found.")
 
@@ -828,6 +994,16 @@ elif selected_tab == tabs[5]:
             st.pyplot(fig)
             plt.close(fig)
 
+            st.markdown(
+                """
+                **How to read this confusion matrix**
+
+                - High diagonal values mean the classifier can correctly distinguish between **Low**, **Medium**, and **High** risk levels.  
+                - For example, if many **High** risk records are predicted as **Medium**, the model tends to **underestimate high risk**,  
+                  which is important for management decisions.
+                """
+            )
+
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**Actual Risk_Level Distribution**")
@@ -835,6 +1011,15 @@ elif selected_tab == tabs[5]:
             with col2:
                 st.markdown("**Predicted Risk_Level Distribution**")
                 st.bar_chart(df_vis["Pred_Risk_Level"].value_counts())
+
+            st.markdown(
+                """
+                **Interpretation of distributions**
+
+                - Check if the model **over-predicts a particular level** (e.g., too many records predicted as *Medium*).  
+                - This supports a discussion on whether the model is conservative or aggressive in assigning high risk.
+                """
+            )
         else:
             st.warning("Predicted and/or actual Risk_Level columns not found.")
 
