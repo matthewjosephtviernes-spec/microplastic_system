@@ -199,7 +199,7 @@ def preprocess_for_model(df: pd.DataFrame):
     existing_cat_cols = [c for c in CATEGORICAL_COLS if c in feature_df.columns]
     X = pd.get_dummies(feature_df, columns=existing_cat_cols, drop_first=True)
 
-    # 🔐 Ensure X is fully numeric (sklearn requirement)
+    # Ensure X is fully numeric (sklearn requirement)
     X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
 
     return df, X, y_type, y_level, skewness, skewed_cols
@@ -213,13 +213,36 @@ def train_models(X, y):
     Train Logistic Regression, Random Forest, Gradient Boosting.
     Returns dict of trained models and performance metrics.
     """
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        random_state=42,
-        stratify=y,
-    )
+    # Drop any rows where y is NaN
+    y = pd.Series(y)
+    mask = y.notna()
+    X = X.loc[mask]
+    y = y.loc[mask]
+
+    if y.nunique() < 2:
+        raise ValueError("Need at least 2 classes in the target to train models.")
+
+    # Try stratified split first, then fallback if it fails
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+            stratify=y,
+        )
+    except ValueError:
+        st.warning(
+            "Stratified train-test split failed (likely due to very small class sizes). "
+            "Using a non-stratified split instead."
+        )
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+            stratify=None,
+        )
 
     models = {
         "Logistic Regression": LogisticRegression(
@@ -262,21 +285,50 @@ def train_models(X, y):
 def smote_and_tune_logreg(X, y):
     """
     For Risk_Type only:
-      - apply SMOTE
+      - apply SMOTE (if possible)
       - tune LogisticRegression with GridSearchCV
     Returns tuned model and metrics df.
     """
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        random_state=42,
-        stratify=y
-    )
+    y = pd.Series(y)
+    mask = y.notna()
+    X = X.loc[mask]
+    y = y.loc[mask]
 
-    # Apply SMOTE on train only
-    smote = SMOTE(random_state=42)
-    X_res, y_res = smote.fit_resample(X_train, y_train)
+    if y.nunique() < 2:
+        raise ValueError("Need at least 2 classes in the target to run SMOTE and tuning.")
+
+    # Try stratified split first
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+            stratify=y
+        )
+    except ValueError:
+        st.warning(
+            "Stratified train-test split for SMOTE/tuning failed "
+            "(likely due to very small class sizes). Using non-stratified split."
+        )
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+            stratify=None
+        )
+
+    # Apply SMOTE on train only (if possible)
+    try:
+        smote = SMOTE(random_state=42)
+        X_res, y_res = smote.fit_resample(X_train, y_train)
+    except ValueError:
+        st.warning(
+            "SMOTE failed due to very small or highly imbalanced classes. "
+            "Continuing without SMOTE for logistic regression tuning."
+        )
+        X_res, y_res = X_train, y_train
 
     # Hyperparameter grid
     param_grid = {
@@ -607,26 +659,36 @@ def main():
                 st.warning(f"Target column '{TARGET_RISK_TYPE}' not found; cannot train models for Risk-Type.")
             else:
                 st.subheader("Models for Risk-Type")
-                models_rt, metrics_rt = train_models(X, y_type)
+                try:
+                    models_rt, metrics_rt = train_models(X, y_type)
+                except ValueError as e:
+                    st.warning(f"Could not train Risk-Type models: {e}")
+                    models_rt, metrics_rt = None, None
 
-                st.write("Performance Metrics – Risk-Type")
-                st.dataframe(metrics_rt.style.format("{:.3f}"))
+                if metrics_rt is not None:
+                    st.write("Performance Metrics – Risk-Type")
+                    st.dataframe(metrics_rt.style.format("{:.3f}"))
 
-                fig_rt = plot_metrics_bar(metrics_rt, "(Risk-Type)")
-                st.pyplot(fig_rt)
+                    fig_rt = plot_metrics_bar(metrics_rt, "(Risk-Type)")
+                    st.pyplot(fig_rt)
 
         with tab2:
             if y_level is None:
                 st.warning(f"Target column '{TARGET_RISK_LEVEL}' not found; cannot train models for Risk-Level.")
             else:
                 st.subheader("Models for Risk-Level")
-                models_rl, metrics_rl = train_models(X, y_level)
+                try:
+                    models_rl, metrics_rl = train_models(X, y_level)
+                except ValueError as e:
+                    st.warning(f"Could not train Risk-Level models: {e}")
+                    models_rl, metrics_rl = None, None
 
-                st.write("Performance Metrics – Risk-Level")
-                st.dataframe(metrics_rl.style.format("{:.3f}"))
+                if metrics_rl is not None:
+                    st.write("Performance Metrics – Risk-Level")
+                    st.dataframe(metrics_rl.style.format("{:.3f}"))
 
-                fig_rl = plot_metrics_bar(metrics_rl, "(Risk-Level)")
-                st.pyplot(fig_rl)
+                    fig_rl = plot_metrics_bar(metrics_rl, "(Risk-Level)")
+                    st.pyplot(fig_rl)
 
         st.subheader("Comparison & Interpretation")
         st.write(
@@ -663,30 +725,40 @@ def main():
         st.write(y_type.value_counts())
 
         # Base models performance (for comparison)
-        _, base_metrics_rt = train_models(X, y_type)
+        try:
+            _, base_metrics_rt = train_models(X, y_type)
+        except ValueError as e:
+            st.warning(f"Could not train base Risk-Type models: {e}")
+            base_metrics_rt = None
 
-        st.subheader("Base Models Performance (Risk-Type)")
-        st.dataframe(base_metrics_rt.style.format("{:.3f}"))
-        fig_base = plot_metrics_bar(base_metrics_rt, "(Risk-Type – Base)")
-        st.pyplot(fig_base)
+        if base_metrics_rt is not None:
+            st.subheader("Base Models Performance (Risk-Type)")
+            st.dataframe(base_metrics_rt.style.format("{:.3f}"))
+            fig_base = plot_metrics_bar(base_metrics_rt, "(Risk-Type – Base)")
+            st.pyplot(fig_base)
 
         st.subheader("Applying SMOTE + Hyperparameter Tuning for Logistic Regression (Risk-Type)")
-        with st.spinner("Running SMOTE and GridSearchCV (this may take a bit)..."):
-            best_lr, tuned_metrics, best_params = smote_and_tune_logreg(X, y_type)
 
-        st.write("Best Hyperparameters (Logistic Regression):")
-        st.json(best_params)
+        try:
+            with st.spinner("Running SMOTE and GridSearchCV (this may take a bit)..."):
+                best_lr, tuned_metrics, best_params = smote_and_tune_logreg(X, y_type)
 
-        st.subheader("Performance of Tuned Logistic Regression (with SMOTE)")
-        st.dataframe(tuned_metrics.style.format("{:.3f}"))
+            st.write("Best Hyperparameters (Logistic Regression):")
+            st.json(best_params)
 
-        # Combine for comparison
-        combined = pd.concat([base_metrics_rt, tuned_metrics])
-        st.subheader("Comparison: Tuned Logistic Regression vs Original Models")
-        st.dataframe(combined.style.format("{:.3f}"))
+            st.subheader("Performance of Tuned Logistic Regression (with SMOTE)")
+            st.dataframe(tuned_metrics.style.format("{:.3f}"))
 
-        fig_combined = plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned + SMOTE)")
-        st.pyplot(fig_combined)
+            if base_metrics_rt is not None:
+                # Combine for comparison
+                combined = pd.concat([base_metrics_rt, tuned_metrics])
+                st.subheader("Comparison: Tuned Logistic Regression vs Original Models")
+                st.dataframe(combined.style.format("{:.3f}"))
+
+                fig_combined = plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned + SMOTE)")
+                st.pyplot(fig_combined)
+        except ValueError as e:
+            st.warning(f"Could not run SMOTE/tuning: {e}")
 
 
 if __name__ == "__main__":
