@@ -140,9 +140,9 @@ def transform_skewed(df: pd.DataFrame, cols):
     for col in skewed_cols:
         # shift to be positive before log1p if necessary
         min_val = df[col].min()
-        shift = 0
         if pd.isna(min_val):
             continue
+        shift = 0
         if min_val <= 0:
             shift = abs(min_val) + 1e-6
         df[col] = np.log1p(df[col] + shift)
@@ -162,7 +162,7 @@ def preprocess_for_model(df: pd.DataFrame):
     """
     Returns:
         df_clean        - after missing, outliers, skew transform, scaling
-        X               - feature matrix (encoded)
+        X               - feature matrix (encoded, numeric)
         y_type          - Risk_Type labels (or None)
         y_level         - Risk_Level labels (or None)
         skewness        - skewness of numeric columns used
@@ -198,6 +198,9 @@ def preprocess_for_model(df: pd.DataFrame):
     # One-hot encode categoricals
     existing_cat_cols = [c for c in CATEGORICAL_COLS if c in feature_df.columns]
     X = pd.get_dummies(feature_df, columns=existing_cat_cols, drop_first=True)
+
+    # 🔐 Ensure X is fully numeric (sklearn requirement)
+    X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
 
     return df, X, y_type, y_level, skewness, skewed_cols
 
@@ -554,24 +557,24 @@ def main():
 
         # RandomForest for Risk_Type
         if y_type is not None:
-            st.subheader("Random Forest Feature Importance – Risk_Type")
+            st.subheader("Random Forest Feature Importance – Risk-Type")
 
             rf_rt = RandomForestClassifier(n_estimators=200, random_state=42)
             rf_rt.fit(X, y_type)
             importances_rt = pd.Series(rf_rt.feature_importances_, index=X.columns)
             importances_rt = importances_rt.sort_values(ascending=False)
 
-            st.write("Top 10 features (Risk_Type):")
+            st.write("Top 10 features (Risk-Type):")
             st.dataframe(importances_rt.head(10))
 
-            fig_rt = plot_bar(importances_rt.head(10), "Top 10 Feature Importances (Risk_Type)", "Features")
+            fig_rt = plot_bar(importances_rt.head(10), "Top 10 Feature Importances (Risk-Type)", "Features")
             st.pyplot(fig_rt)
         else:
-            st.warning(f"Target column '{TARGET_RISK_TYPE}' not found; cannot compute feature importance for Risk_Type.")
+            st.warning(f"Target column '{TARGET_RISK_TYPE}' not found; cannot compute feature importance for Risk-Type.")
 
-        # RandomForest for Risk_Level
+        # RandomForest for Risk-Level
         if y_level is not None:
-            st.subheader("Random Forest Feature Importance – Risk_Level")
+            st.subheader("Random Forest Feature Importance – Risk-Level")
 
             rf_rl = RandomForestClassifier(n_estimators=200, random_state=42)
             rf_rl.fit(X, y_level)
@@ -581,14 +584,14 @@ def main():
             st.write("Top 10 features (Risk-Level):")
             st.dataframe(importances_rl.head(10))
 
-            fig_rl = plot_bar(importances_rl.head(10), "Top 10 Feature Importances (Risk_Level)", "Features")
+            fig_rl = plot_bar(importances_rl.head(10), "Top 10 Feature Importances (Risk-Level)", "Features")
             st.pyplot(fig_rl)
         else:
             st.warning(f"Target column '{TARGET_RISK_LEVEL}' not found; cannot compute feature importance for Risk-Level.")
 
         st.subheader("Summary of Feature Relevance")
         st.write(
-            "You can discuss which features consistently appear in the top ranks for both Risk_Type "
+            "You can discuss which features consistently appear in the top ranks for both Risk-Type "
             "and Risk-Level, and interpret their environmental meaning."
         )
 
