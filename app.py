@@ -236,6 +236,40 @@ div[data-baseweb="select"] span, div[data-baseweb="select"] div{
   color: var(--text) !important;
 }
 
+
+/* File uploader: make dropzone text readable even before hover/click */
+[data-testid="stFileUploaderDropzone"]{
+  background: rgba(255,255,255,0.08) !important;
+  border: 1px solid var(--border) !important;
+}
+
+[data-testid="stFileUploaderDropzone"] *{
+  color: var(--text) !important;
+  fill: var(--text) !important;
+  opacity: 1 !important;
+}
+
+/* Specifically target the helper text lines */
+[data-testid="stFileUploaderDropzone"] p,
+[data-testid="stFileUploaderDropzone"] small,
+[data-testid="stFileUploaderDropzone"] span{
+  color: var(--text) !important;
+  opacity: 1 !important;
+}
+
+/* Ensure the icon is visible */
+[data-testid="stFileUploaderDropzone"] svg{
+  color: var(--text) !important;
+  fill: var(--text) !important;
+  opacity: 1 !important;
+}
+
+/* The right-side 'Browse files' button text */
+[data-testid="stFileUploaderDropzone"] button,
+[data-testid="stFileUploaderDropzone"] button *{
+  color: #06111f !important;
+}
+
 footer{visibility: hidden;}
 </style>
 """
