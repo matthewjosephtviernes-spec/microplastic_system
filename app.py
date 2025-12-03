@@ -14,8 +14,16 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.inspection import permutation_importance
 from sklearn.model_selection import GridSearchCV
 
-from imblearn.over_sampling import SMOTE
-from imblearn.pipeline import Pipeline as ImbPipeline
+try:
+    from imblearn.over_sampling import SMOTE
+    IMBLEARN_AVAILABLE = True
+except ModuleNotFoundError:
+    SMOTE = None
+    IMBLEARN_AVAILABLE = False
+try:
+    from imblearn.pipeline import Pipeline as ImbPipeline
+except ModuleNotFoundError:
+    ImbPipeline = None
 
 # ------------------------------------------------------------
 # Page config + styling (keep a clean aesthetic similar to your original)
@@ -25,43 +33,94 @@ st.set_page_config(page_title="Microplastic Risk Dashboard", page_icon="🧪", l
 CSS = """
 <style>
 :root{
-  --bg: #0b1220;
-  --card: rgba(255,255,255,0.06);
-  --card2: rgba(255,255,255,0.08);
+  --bg: #0f172a;              /* slate-900 */
+  --panel: rgba(255,255,255,0.06);
+  --panel2: rgba(255,255,255,0.09);
+  --border: rgba(255,255,255,0.14);
   --text: rgba(255,255,255,0.92);
-  --muted: rgba(255,255,255,0.72);
-  --primary: #22c55e;
-  --primary2:#16a34a;
-  --border: rgba(255,255,255,0.10);
+  --muted: rgba(255,255,255,0.70);
+  --accent: #38bdf8;          /* sky-400 */
+  --accent2: #a78bfa;         /* violet-400 */
+  --good: #4ade80;            /* green-400 */
+  --warn: #fbbf24;            /* amber-400 */
+  --bad: #fb7185;             /* rose-400 */
+  --shadow: 0 10px 30px rgba(0,0,0,0.35);
 }
-.stApp { background: radial-gradient(1200px 800px at 20% 0%, #12243b, var(--bg)); color: var(--text); }
-h1,h2,h3,h4 { color: var(--text); }
-p,li,span,label,div { color: var(--text); }
-a { color: var(--primary); }
-hr { border-color: var(--border) !important; }
 
-.block-container { padding-top: 1.4rem; padding-bottom: 2.2rem; }
+html, body, [data-testid="stAppViewContainer"]{
+  background: radial-gradient(1200px 600px at 20% 0%, rgba(56,189,248,0.12), transparent 60%),
+              radial-gradient(1000px 600px at 80% 10%, rgba(167,139,250,0.14), transparent 55%),
+              var(--bg);
+  color: var(--text);
+}
+
+[data-testid="stSidebar"]{
+  background: rgba(2,6,23,0.65);
+  border-right: 1px solid var(--border);
+}
+
+a { color: var(--accent); }
+h1,h2,h3,h4 { color: var(--text); letter-spacing: .2px; }
+p,li,span,label,div { color: var(--text); }
+
+.small-muted{ color: var(--muted) !important; }
 
 .card{
-  background: linear-gradient(135deg, var(--card), var(--card2));
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 18px;
-  padding: 1.1rem 1.2rem;
-  box-shadow: 0 12px 32px rgba(0,0,0,0.25);
+  box-shadow: var(--shadow);
+  padding: 18px 18px 8px 18px;
+  margin: 10px 0 18px 0;
 }
-.pill{
-  display:inline-block; padding: 0.18rem 0.65rem; border-radius: 999px;
-  border: 1px solid var(--border); background: rgba(34,197,94,0.15);
-  color: var(--text); font-weight: 600; font-size: 0.85rem;
+.card h3 { margin-top: 0; }
+
+.kpi{
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px 14px;
 }
-.smallmuted{ color: var(--muted); font-size: 0.92rem; }
-.stButton>button{
-  background: linear-gradient(135deg, var(--primary), var(--primary2));
-  border: none; border-radius: 999px; padding: .45rem 1.1rem;
-  color: white; font-weight: 700; letter-spacing: .01em;
-  box-shadow: 0 8px 18px rgba(34,197,94,0.22);
+
+hr{
+  border: none;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border), transparent);
+  margin: 18px 0;
 }
-.stButton>button:hover{ filter: brightness(1.05); transform: translateY(-1px);}
+
+/* Inputs */
+[data-testid="stTextInput"], [data-testid="stSelectbox"], [data-testid="stMultiSelect"], [data-testid="stNumberInput"]{
+  color: var(--text);
+}
+
+.stButton > button{
+  background: linear-gradient(135deg, rgba(56,189,248,0.9), rgba(167,139,250,0.9));
+  color: #0b1220;
+  border: 0;
+  border-radius: 14px;
+  padding: 0.65rem 1rem;
+  font-weight: 700;
+  box-shadow: 0 10px 25px rgba(56,189,248,0.18);
+}
+.stButton > button:hover{
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+[data-testid="stDataFrame"]{
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+[data-testid="stMetric"]{
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -630,6 +689,10 @@ elif selected_tab == tabs[6]:
 
     st.markdown("#### Address Class Imbalance with SMOTE")
     use_smote = st.checkbox("Enable SMOTE", value=True)
+    if use_smote and not IMBLEARN_AVAILABLE:
+        st.warning("SMOTE requested but 'imbalanced-learn' is not installed. SMOTE will be skipped.")
+        use_smote = False
+
     smote_k = st.slider("SMOTE k_neighbors", 2, 10, 5)
 
     st.markdown("#### Choose classification models")
