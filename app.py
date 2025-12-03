@@ -211,7 +211,10 @@ def preprocess_for_model(df: pd.DataFrame):
 def train_models(X, y):
     """
     Train Logistic Regression, Random Forest, Gradient Boosting.
-    Returns dict of trained models and performance metrics.
+    Returns:
+        models      - dict of trained models
+        metrics_df  - performance metrics
+        split_info  - dict with train/test shapes and class distributions
     """
     # Drop any rows where y is NaN
     y = pd.Series(y)
@@ -243,6 +246,13 @@ def train_models(X, y):
             random_state=42,
             stratify=None,
         )
+
+    split_info = {
+        "X_train_shape": X_train.shape,
+        "X_test_shape": X_test.shape,
+        "y_train_counts": y_train.value_counts(),
+        "y_test_counts": y_test.value_counts(),
+    }
 
     models = {
         "Logistic Regression": LogisticRegression(
@@ -279,7 +289,7 @@ def train_models(X, y):
         })
 
     metrics_df = pd.DataFrame(metrics_list).set_index("Model")
-    return models, metrics_df
+    return models, metrics_df, split_info
 
 
 def smote_and_tune_logreg(X, y):
@@ -287,7 +297,11 @@ def smote_and_tune_logreg(X, y):
     For Risk_Type only:
       - apply SMOTE (if possible)
       - tune LogisticRegression with GridSearchCV
-    Returns tuned model and metrics df.
+    Returns:
+        best_lr        - tuned LogisticRegression model
+        tuned_metrics  - performance metrics
+        best_params    - best hyperparameters
+        split_info     - train/test shapes and distributions (before SMOTE)
     """
     y = pd.Series(y)
     mask = y.notna()
@@ -318,6 +332,13 @@ def smote_and_tune_logreg(X, y):
             random_state=42,
             stratify=None
         )
+
+    split_info = {
+        "X_train_shape": X_train.shape,
+        "X_test_shape": X_test.shape,
+        "y_train_counts": y_train.value_counts(),
+        "y_test_counts": y_test.value_counts(),
+    }
 
     # Apply SMOTE on train only (if possible)
     try:
@@ -371,7 +392,7 @@ def smote_and_tune_logreg(X, y):
         }]
     ).set_index("Model")
 
-    return best_lr, tuned_metrics, grid.best_params_
+    return best_lr, tuned_metrics, grid.best_params_, split_info
 
 
 # -------------------------------------------------------
@@ -717,7 +738,7 @@ def main():
             importances_rt = pd.Series(rf_rt.feature_importances_, index=X.columns)
             importances_rt = importances_rt.sort_values(ascending=False)
 
-            st.write("Top 10 features (Risk_Type):")
+            st.write("Top 10 features (Risk-Type):")
             st.dataframe(importances_rt.head(10))
 
             fig_rt = plot_bar(importances_rt.head(10), "Top 10 Feature Importances (Risk_Type)", "Features")
@@ -732,11 +753,11 @@ def main():
                 """
             )
         else:
-            st.warning(f"Target column '{TARGET_RISK_TYPE}' not found; cannot compute feature importance for Risk_Type.")
+            st.warning(f"Target column '{TARGET_RISK_TYPE}' not found; cannot compute feature importance for Risk-Type.")
 
-        # RandomForest for Risk_Level
+        # RandomForest for Risk-Level
         if y_level is not None:
-            st.subheader("Random Forest Feature Importance – Risk_Level")
+            st.subheader("Random Forest Feature Importance – Risk-Level")
 
             rf_rl = RandomForestClassifier(n_estimators=200, random_state=42)
             rf_rl.fit(X, y_level)
@@ -749,7 +770,7 @@ def main():
             fig_rl = plot_bar(importances_rl.head(10), "Top 10 Feature Importances (Risk_Level)", "Features")
             st.pyplot(fig_rl)
 
-            st.markdown("**Interpretation (Risk_Level):**")
+            st.markdown("**Interpretation (Risk-Level):**")
             st.markdown(
                 """
                 - These feature importance scores indicate which variables most influence the classification of **Risk_Level**.
@@ -777,10 +798,10 @@ def main():
             else:
                 st.subheader("Models for Risk-Type")
                 try:
-                    models_rt, metrics_rt = train_models(X, y_type)
+                    models_rt, metrics_rt, split_info_rt = train_models(X, y_type)
                 except ValueError as e:
                     st.warning(f"Could not train Risk-Type models: {e}")
-                    models_rt, metrics_rt = None, None
+                    models_rt, metrics_rt, split_info_rt = None, None, None
 
                 if metrics_rt is not None:
                     st.write("Performance Metrics – Risk-Type")
@@ -789,11 +810,24 @@ def main():
                     fig_rt = plot_metrics_bar(metrics_rt, "(Risk-Type)")
                     st.pyplot(fig_rt)
 
+                    st.markdown("**Train–Test Split (Risk-Type):**")
+                    st.markdown(
+                        f"""
+                        - Training set shape: `{split_info_rt['X_train_shape']}`  
+                        - Test set shape: `{split_info_rt['X_test_shape']}`
+                        """
+                    )
+                    st.write("Class distribution in **training set**:")
+                    st.write(split_info_rt["y_train_counts"])
+                    st.write("Class distribution in **test set**:")
+                    st.write(split_info_rt["y_test_counts"])
+
                     st.markdown("**Interpretation (Risk-Type Models):**")
                     st.markdown(
                         """
                         - The table and bar chart summarize the performance of different models in predicting **Risk_Type**.
                         - **Accuracy** measures overall correctness, while **precision, recall, and F1-score** capture how well each model handles different classes.
+                        - The train–test split details show how the data was partitioned and how balanced each class is in the training and test sets.
                         - The model with the highest F1-score is usually the most balanced and is a strong candidate for deployment for Risk_Type classification.
                         """
                     )
@@ -805,10 +839,10 @@ def main():
             else:
                 st.subheader("Models for Risk-Level")
                 try:
-                    models_rl, metrics_rl = train_models(X, y_level)
+                    models_rl, metrics_rl, split_info_rl = train_models(X, y_level)
                 except ValueError as e:
                     st.warning(f"Could not train Risk-Level models: {e}")
-                    models_rl, metrics_rl = None, None
+                    models_rl, metrics_rl, split_info_rl = None, None, None
 
                 if metrics_rl is not None:
                     st.write("Performance Metrics – Risk-Level")
@@ -817,10 +851,23 @@ def main():
                     fig_rl = plot_metrics_bar(metrics_rl, "(Risk-Level)")
                     st.pyplot(fig_rl)
 
+                    st.markdown("**Train–Test Split (Risk-Level):**")
+                    st.markdown(
+                        f"""
+                        - Training set shape: `{split_info_rl['X_train_shape']}`  
+                        - Test set shape: `{split_info_rl['X_test_shape']}`
+                        """
+                    )
+                    st.write("Class distribution in **training set**:")
+                    st.write(split_info_rl["y_train_counts"])
+                    st.write("Class distribution in **test set**:")
+                    st.write(split_info_rl["y_test_counts"])
+
                     st.markdown("**Interpretation (Risk-Level Models):**")
                     st.markdown(
                         """
                         - These results show how accurately each model predicts the categorical **Risk_Level** (e.g., Low, Moderate, High).
+                        - The train–test split summary helps verify that the evaluation is based on a reasonable partition of the data.
                         - Comparing the metrics across models helps identify which algorithm is best suited for capturing the structure of Risk_Level in the data.
                         - Again, F1-score is a useful summary for models dealing with potentially imbalanced risk categories.
                         """
@@ -830,6 +877,7 @@ def main():
         st.markdown(
             """
             - By comparing models for both **Risk_Type** and **Risk_Level**, we can identify the most reliable algorithms for risk prediction.
+            - The explicit train–test split information strengthens the transparency and reproducibility of the modeling process.
             - These results can be referenced in the thesis to justify the final model choice for the decision-support system.
             """
         )
@@ -899,10 +947,10 @@ def main():
 
         # ---------- Base Models ----------
         try:
-            _, base_metrics_rt = train_models(X, y_type)
+            _, base_metrics_rt, split_info_base_rt = train_models(X, y_type)
         except ValueError as e:
             st.warning(f"Could not train base Risk-Type models: {e}")
-            base_metrics_rt = None
+            base_metrics_rt, split_info_base_rt = None, None
 
         if base_metrics_rt is not None:
             st.subheader("Base Models Performance (Risk-Type)")
@@ -910,10 +958,23 @@ def main():
             fig_base = plot_metrics_bar(base_metrics_rt, "(Risk-Type – Base)")
             st.pyplot(fig_base)
 
+            st.markdown("**Train–Test Split (Base Risk-Type Models):**")
+            st.markdown(
+                f"""
+                - Training set shape: `{split_info_base_rt['X_train_shape']}`  
+                - Test set shape: `{split_info_base_rt['X_test_shape']}`
+                """
+            )
+            st.write("Class distribution in **training set**:")
+            st.write(split_info_base_rt["y_train_counts"])
+            st.write("Class distribution in **test set**:")
+            st.write(split_info_base_rt["y_test_counts"])
+
             st.markdown("**Interpretation (Base Models):**")
             st.markdown(
                 """
                 - These metrics show how well the initial models perform **before** any class balancing or tuning.
+                - The train–test split summary also reveals whether the imbalance persists in both training and test sets.
                 - Lower performance, especially on minority classes, often indicates the need for improved handling of class imbalance.
                 """
             )
@@ -923,17 +984,29 @@ def main():
 
         try:
             with st.spinner("Running SMOTE and GridSearchCV (this may take a bit)..."):
-                best_lr, tuned_metrics, best_params = smote_and_tune_logreg(X, y_type)
+                best_lr, tuned_metrics, best_params, split_info_smote = smote_and_tune_logreg(X, y_type)
 
             st.write("Best Hyperparameters (Logistic Regression):")
             st.json(best_params)
+
+            st.markdown("**Train–Test Split (Tuned Risk-Type Model):**")
+            st.markdown(
+                f"""
+                - Training set shape (before SMOTE): `{split_info_smote['X_train_shape']}`  
+                - Test set shape: `{split_info_smote['X_test_shape']}`
+                """
+            )
+            st.write("Class distribution in **training set (before SMOTE)**:")
+            st.write(split_info_smote["y_train_counts"])
+            st.write("Class distribution in **test set**:")
+            st.write(split_info_smote["y_test_counts"])
 
             st.markdown("**Interpretation (Tuned Logistic Regression):**")
             st.markdown(
                 """
                 - SMOTE generates synthetic examples for minority Risk_Type classes, leading to a more balanced training set.
                 - Hyperparameter tuning adjusts the logistic regression model to better fit the balanced data.
-                - The resulting performance metrics reflect how effective the tuned model is under improved class balance.
+                - The train–test summary clarifies how the model was evaluated and how imbalance was addressed.
                 """
             )
 
@@ -946,7 +1019,7 @@ def main():
                 st.subheader("Comparison: Tuned Logistic Regression vs Original Models")
                 st.dataframe(combined.style.format("{:.3f}"))
 
-                fig_combined = plot_metrics_bar(combined, "(Risk-Type – Base vs TunED + SMOTE)")
+                fig_combined = plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned + SMOTE)")
                 st.pyplot(fig_combined)
 
                 st.markdown("**Interpretation (Comparison):**")
