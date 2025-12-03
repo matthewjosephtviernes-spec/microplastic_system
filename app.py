@@ -1068,6 +1068,11 @@ elif page == "4. Feature Selection":
     X = df.drop(columns=target_cols, errors="ignore")
     y = df[target].astype("string")
 
+    # Clean target: drop missing labels (pd.NA causes sklearn errors)
+    mask = y.notna()
+    X = X.loc[mask].copy()
+    y = y.loc[mask].astype(str)
+
     st.markdown("---")
     k = st.slider("Number of features (k) for SelectKBest", 5, min(100, max(10, X.shape[1])), 20, 1)
 
@@ -1133,6 +1138,11 @@ elif page == "5. Modeling (Objective #1)":
     X = df.drop(columns=[target], errors="ignore")
     y = df[target].astype("string")
 
+    # Clean target: drop missing labels
+    mask = y.notna()
+    X = X.loc[mask].copy()
+    y = y.loc[mask].astype(str)
+
     num_cols, cat_cols = split_feature_types(df, target_cols=[target])
 
     test_size = st.slider("Test size", 0.1, 0.4, 0.2, 0.05)
@@ -1177,6 +1187,12 @@ elif page == "6. Risk_Type Modeling (Objective #2)":
 
     X = df.drop(columns=[risk_type_col], errors="ignore")
     y = df[risk_type_col].astype("string")
+
+    # Clean target: drop missing labels
+    mask = y.notna()
+    X = X.loc[mask].copy()
+    y = y.loc[mask].astype(str)
+
     num_cols, cat_cols = split_feature_types(df, target_cols=[risk_type_col])
 
     st.markdown("### Class distribution")
@@ -1239,6 +1255,12 @@ elif page == "7. Hyperparameter Tuning & Best Model":
 
     X = df.drop(columns=[target], errors="ignore")
     y = df[target].astype("string")
+
+    # Clean target: drop missing labels
+    mask = y.notna()
+    X = X.loc[mask].copy()
+    y = y.loc[mask].astype(str)
+
     num_cols, cat_cols = split_feature_types(df, target_cols=[target])
 
     use_smote = st.checkbox("Use SMOTE in tuning (if available)", value=st.session_state.obj2_use_smote)
