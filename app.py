@@ -51,16 +51,33 @@ def load_data(uploaded_file=None, path: str = "MicroPlastic.csv"):
     """
     If a file is uploaded, read that.
     Otherwise, try to read MicroPlastic.csv from disk.
-    If neither works, return None.
+    Uses a permissive encoding to avoid UnicodeDecodeError.
     """
-    try:
-        if uploaded_file is not None:
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_csv(path)
-        return df
-    except FileNotFoundError:
-        return None
+    # Try UTF-8 first, then fall back to latin1
+    encodings_to_try = ["utf-8", "latin1"]
+
+    # Source is either uploaded file or local path
+    src = uploaded_file if uploaded_file is not None else path
+
+    last_err = None
+    for enc in encodings_to_try:
+        try:
+            df = pd.read_csv(src, encoding=enc)
+            return df
+        except UnicodeDecodeError as e:
+            last_err = e
+            continue
+        except FileNotFoundError:
+            # Only makes sense for local path
+            if uploaded_file is None:
+                raise
+
+    # If we get here, it was an encoding issue
+    if last_err is not None:
+        # Re-raise so we can catch it in main() and show a friendly message
+        raise last_err
+
+    return None  # fallback (shouldn't normally hit)
 
 
 # -------------------------------------------------------
@@ -106,7 +123,12 @@ def cap_outliers_iqr(df: pd.DataFrame, cols) -> pd.DataFrame:
 
 def transform_skewed(df: pd.DataFrame, cols):
     df = df.copy()
-    skewness = df[cols].skew()
+    # Keep only numeric columns that actually exist
+    cols_present = [c for c in cols if c in df.columns]
+    if not cols_present:
+        return df, pd.Series(dtype=float), []
+
+    skewness = df[cols_present].skew()
     # consider columns with |skew| > 1 as skewed
     skewed_cols = skewness[skewness.abs() > 1].index.tolist()
 
@@ -391,7 +413,17 @@ def main():
         help="If you don't upload anything, the app will try to use 'MicroPlastic.csv' from the app folder."
     )
 
-    df_raw = load_data(uploaded_file=uploaded_file)
+    try:
+        df_raw = load_data(uploaded_file=uploaded_file)
+    except UnicodeDecodeError:
+        st.error(
+            "⚠️ I couldn't decode your file as text.\n\n"
+            "Please make sure you uploaded a **CSV text file** (not Excel) and, if needed, "
+            "re-export it from Excel/Sheets using UTF-8 encoding."
+        )
+        st.stop()
+    except FileNotFoundError:
+        df_raw = None
 
     if df_raw is None:
         st.error(
