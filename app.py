@@ -47,9 +47,20 @@ TARGET_RISK_LEVEL = "Risk_Level"
 # DATA LOADING
 # -------------------------------------------------------
 @st.cache_data
-def load_data(path: str = "MicroPlastic.csv") -> pd.DataFrame:
-    df = pd.read_csv(path)
-    return df
+def load_data(uploaded_file=None, path: str = "MicroPlastic.csv"):
+    """
+    If a file is uploaded, read that.
+    Otherwise, try to read MicroPlastic.csv from disk.
+    If neither works, return None.
+    """
+    try:
+        if uploaded_file is not None:
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_csv(path)
+        return df
+    except FileNotFoundError:
+        return None
 
 
 # -------------------------------------------------------
@@ -113,7 +124,8 @@ def scale_numeric(df: pd.DataFrame, cols):
     df = df.copy()
     scaler = StandardScaler()
     cols_present = [c for c in cols if c in df.columns]
-    df[cols_present] = scaler.fit_transform(df[cols_present])
+    if cols_present:
+        df[cols_present] = scaler.fit_transform(df[cols_present])
     return df, scaler
 
 
@@ -130,7 +142,9 @@ def preprocess_for_model(df: pd.DataFrame):
     df = df.copy()
 
     # Keep only rows where both targets are present
-    df = df.dropna(subset=[TARGET_RISK_TYPE, TARGET_RISK_LEVEL])
+    available_targets = [c for c in [TARGET_RISK_TYPE, TARGET_RISK_LEVEL] if c in df.columns]
+    if len(available_targets) == 2:
+        df = df.dropna(subset=available_targets)
 
     # Handle missing
     df = handle_missing_values(df)
@@ -145,11 +159,19 @@ def preprocess_for_model(df: pd.DataFrame):
     df, scaler = scale_numeric(df, NUMERIC_COLS)
 
     # Separate targets
-    y_type = df[TARGET_RISK_TYPE]
-    y_level = df[TARGET_RISK_LEVEL]
+    if TARGET_RISK_TYPE in df.columns:
+        y_type = df[TARGET_RISK_TYPE]
+    else:
+        y_type = None
+
+    if TARGET_RISK_LEVEL in df.columns:
+        y_level = df[TARGET_RISK_LEVEL]
+    else:
+        y_level = None
 
     # Drop targets from features
-    feature_df = df.drop(columns=[TARGET_RISK_TYPE, TARGET_RISK_LEVEL])
+    drop_cols = [c for c in [TARGET_RISK_TYPE, TARGET_RISK_LEVEL] if c in df.columns]
+    feature_df = df.drop(columns=drop_cols)
 
     # One-hot encode categoricals
     existing_cat_cols = [c for c in CATEGORICAL_COLS if c in feature_df.columns]
@@ -345,7 +367,7 @@ def main():
         """
     )
 
-    # Sidebar
+    # Sidebar navigation
     st.sidebar.header("Navigation")
     page = st.sidebar.radio(
         "Go to",
@@ -359,9 +381,28 @@ def main():
         ],
     )
 
-    # Load dataset
-    df_raw = load_data()
+    # -------------------------------
+    # Load dataset (from upload or local file)
+    # -------------------------------
+    st.sidebar.subheader("Data source")
+    uploaded_file = st.sidebar.file_uploader(
+        "Upload MicroPlastic CSV",
+        type=["csv"],
+        help="If you don't upload anything, the app will try to use 'MicroPlastic.csv' from the app folder."
+    )
 
+    df_raw = load_data(uploaded_file=uploaded_file)
+
+    if df_raw is None:
+        st.error(
+            "❌ No dataset found.\n\n"
+            "Either:\n"
+            "- Upload your `MicroPlastic.csv` file using the sidebar, **or**\n"
+            "- Place a file named `MicroPlastic.csv` in the same folder as `app.py`."
+        )
+        st.stop()
+
+    # PAGES
     if page == "Data Overview & Task 1":
         st.header("Data Overview & Task 1: Risk_Score Analysis")
 
@@ -388,13 +429,19 @@ def main():
     elif page == "Preprocessing (Task 2)":
         st.header("Task 2: Preprocessing")
 
-        st.subheader("Before Preprocessing – Descriptive Stats (Numeric Columns)")
-        st.write(df_raw[NUMERIC_COLS].describe())
+        numeric_present = [c for c in NUMERIC_COLS if c in df_raw.columns]
+        if numeric_present:
+            st.subheader("Before Preprocessing – Descriptive Stats (Numeric Columns)")
+            st.write(df_raw[numeric_present].describe())
+        else:
+            st.info("No numeric columns from NUMERIC_COLS were found in the dataset.")
 
         df_clean, X, y_type, y_level, skewness, skewed_cols = preprocess_for_model(df_raw)
 
-        st.subheader("After Outlier Handling, Skew Transform, and Scaling – Descriptive Stats")
-        st.write(df_clean[NUMERIC_COLS].describe())
+        numeric_present_clean = [c for c in NUMERIC_COLS if c in df_clean.columns]
+        if numeric_present_clean:
+            st.subheader("After Outlier Handling, Skew Transform, and Scaling – Descriptive Stats")
+            st.write(df_clean[numeric_present_clean].describe())
 
         st.subheader("Skewness of Numeric Columns (before transform)")
         st.write(skewness)
@@ -409,8 +456,10 @@ def main():
         st.dataframe(X.head(10))
 
         st.write("Shape of X:", X.shape)
-        st.write(f"Number of samples (y_type): {len(y_type)}, classes: {y_type.unique()}")
-        st.write(f"Number of samples (y_level): {len(y_level)}, classes: {y_level.unique()}")
+        if y_type is not None:
+            st.write(f"Number of samples (y_type): {len(y_type)}, classes: {y_type.unique()}")
+        if y_level is not None:
+            st.write(f"Number of samples (y_level): {len(y_level)}, classes: {y_level.unique()}")
 
     elif page == "Feature Selection & Relevance (Task 3 & 6)":
         st.header("Tasks 3 & 6: Feature Selection / Relevance")
@@ -424,32 +473,38 @@ def main():
         )
 
         # RandomForest for Risk_Type
-        st.subheader("Random Forest Feature Importance – Risk_Type")
+        if y_type is not None:
+            st.subheader("Random Forest Feature Importance – Risk_Type")
 
-        rf_rt = RandomForestClassifier(n_estimators=200, random_state=42)
-        rf_rt.fit(X, y_type)
-        importances_rt = pd.Series(rf_rt.feature_importances_, index=X.columns)
-        importances_rt = importances_rt.sort_values(ascending=False)
+            rf_rt = RandomForestClassifier(n_estimators=200, random_state=42)
+            rf_rt.fit(X, y_type)
+            importances_rt = pd.Series(rf_rt.feature_importances_, index=X.columns)
+            importances_rt = importances_rt.sort_values(ascending=False)
 
-        st.write("Top 10 features (Risk_Type):")
-        st.dataframe(importances_rt.head(10))
+            st.write("Top 10 features (Risk_Type):")
+            st.dataframe(importances_rt.head(10))
 
-        fig_rt = plot_bar(importances_rt.head(10), "Top 10 Feature Importances (Risk_Type)", "Features")
-        st.pyplot(fig_rt)
+            fig_rt = plot_bar(importances_rt.head(10), "Top 10 Feature Importances (Risk_Type)", "Features")
+            st.pyplot(fig_rt)
+        else:
+            st.warning(f"Target column '{TARGET_RISK_TYPE}' not found; cannot compute feature importance for Risk_Type.")
 
         # RandomForest for Risk_Level
-        st.subheader("Random Forest Feature Importance – Risk_Level")
+        if y_level is not None:
+            st.subheader("Random Forest Feature Importance – Risk_Level")
 
-        rf_rl = RandomForestClassifier(n_estimators=200, random_state=42)
-        rf_rl.fit(X, y_level)
-        importances_rl = pd.Series(rf_rl.feature_importances_, index=X.columns)
-        importances_rl = importances_rl.sort_values(ascending=False)
+            rf_rl = RandomForestClassifier(n_estimators=200, random_state=42)
+            rf_rl.fit(X, y_level)
+            importances_rl = pd.Series(rf_rl.feature_importances_, index=X.columns)
+            importances_rl = importances_rl.sort_values(ascending=False)
 
-        st.write("Top 10 features (Risk_Level):")
-        st.dataframe(importances_rl.head(10))
+            st.write("Top 10 features (Risk_Level):")
+            st.dataframe(importances_rl.head(10))
 
-        fig_rl = plot_bar(importances_rl.head(10), "Top 10 Feature Importances (Risk_Level)", "Features")
-        st.pyplot(fig_rl)
+            fig_rl = plot_bar(importances_rl.head(10), "Top 10 Feature Importances (Risk_Level)", "Features")
+            st.pyplot(fig_rl)
+        else:
+            st.warning(f"Target column '{TARGET_RISK_LEVEL}' not found; cannot compute feature importance for Risk_Level.")
 
         st.subheader("Summary of Feature Relevance")
         st.write(
@@ -465,24 +520,30 @@ def main():
         tab1, tab2 = st.tabs(["Risk_Type Models", "Risk_Level Models"])
 
         with tab1:
-            st.subheader("Models for Risk_Type")
-            models_rt, metrics_rt = train_models(X, y_type)
+            if y_type is None:
+                st.warning(f"Target column '{TARGET_RISK_TYPE}' not found; cannot train models for Risk_Type.")
+            else:
+                st.subheader("Models for Risk_Type")
+                models_rt, metrics_rt = train_models(X, y_type)
 
-            st.write("Performance Metrics – Risk_Type")
-            st.dataframe(metrics_rt.style.format("{:.3f}"))
+                st.write("Performance Metrics – Risk_Type")
+                st.dataframe(metrics_rt.style.format("{:.3f}"))
 
-            fig_rt = plot_metrics_bar(metrics_rt, "(Risk_Type)")
-            st.pyplot(fig_rt)
+                fig_rt = plot_metrics_bar(metrics_rt, "(Risk_Type)")
+                st.pyplot(fig_rt)
 
         with tab2:
-            st.subheader("Models for Risk_Level")
-            models_rl, metrics_rl = train_models(X, y_level)
+            if y_level is None:
+                st.warning(f"Target column '{TARGET_RISK_LEVEL}' not found; cannot train models for Risk_Level.")
+            else:
+                st.subheader("Models for Risk_Level")
+                models_rl, metrics_rl = train_models(X, y_level)
 
-            st.write("Performance Metrics – Risk_Level")
-            st.dataframe(metrics_rl.style.format("{:.3f}"))
+                st.write("Performance Metrics – Risk_Level")
+                st.dataframe(metrics_rl.style.format("{:.3f}"))
 
-            fig_rl = plot_metrics_bar(metrics_rl, "(Risk_Level)")
-            st.pyplot(fig_rl)
+                fig_rl = plot_metrics_bar(metrics_rl, "(Risk_Level)")
+                st.pyplot(fig_rl)
 
         st.subheader("Comparison & Interpretation")
         st.write(
@@ -510,6 +571,10 @@ def main():
         st.header("Address Class Imbalance & Tune Logistic Regression (Risk_Type)")
 
         df_clean, X, y_type, y_level, _, _ = preprocess_for_model(df_raw)
+
+        if y_type is None:
+            st.warning(f"Target column '{TARGET_RISK_TYPE}' not found; cannot run SMOTE or tuning.")
+            return
 
         st.subheader("Class Distribution of Risk_Type (Original)")
         st.write(y_type.value_counts())
