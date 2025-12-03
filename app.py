@@ -123,9 +123,8 @@ h1, h2, h3, h4{
   letter-spacing: 0.2px;
 }
 
-p, li, label, span{
-  color: var(--muted) !important;
-}
+p, li{ color: var(--text) !important; }
+label, span{ color: var(--text) !important; }
 
 a{
   color: var(--accent) !important;
@@ -214,6 +213,27 @@ input, textarea{
 .stAlert{
   border-radius: 14px;
   border: 1px solid var(--border);
+}
+
+
+/* Make Streamlit widget labels and inputs readable */
+label, .stMarkdown, .stText, .stCaption, .stCheckbox, .stRadio, .stSelectbox, .stMultiSelect, .stSlider {
+  color: var(--text) !important;
+}
+
+/* Inputs text */
+input, textarea, [data-baseweb="input"] input, [data-baseweb="textarea"] textarea{
+  color: var(--text) !important;
+}
+
+/* Select/Dropdown text */
+div[data-baseweb="select"] span, div[data-baseweb="select"] div{
+  color: var(--text) !important;
+}
+
+/* Dataframe header text */
+[data-testid="stDataFrame"] *{
+  color: var(--text) !important;
 }
 
 footer{visibility: hidden;}
