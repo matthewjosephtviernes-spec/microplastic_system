@@ -82,16 +82,19 @@ def load_data(uploaded_file=None, path: str = "Microplastic.csv"):
 # -------------------------------------------------------
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+
+    # Numeric columns: coerce to numeric and fill with median
+    for col in NUMERIC_COLS:
+        if col in df.columns:
+            s = pd.to_numeric(df[col], errors="coerce")
+            median = s.median()
+            df[col] = s.fillna(median)
+
     # Example: Polymer_Type -> fill with mode
     if "Polymer_Type" in df.columns:
         mode_val = df["Polymer_Type"].mode(dropna=True)
         if len(mode_val) > 0:
             df["Polymer_Type"] = df["Polymer_Type"].fillna(mode_val.iloc[0])
-
-    # Simple numeric imputation: fill remaining numeric NaNs with median
-    for col in NUMERIC_COLS:
-        if col in df.columns:
-            df[col] = df[col].fillna(df[col].median())
 
     # Simple categorical imputation: fill remaining NaNs with mode
     for col in CATEGORICAL_COLS:
@@ -108,13 +111,15 @@ def cap_outliers_iqr(df: pd.DataFrame, cols) -> pd.DataFrame:
     for col in cols:
         if col not in df.columns:
             continue
-        Q1 = df[col].quantile(0.25)
-        Q3 = df[col].quantile(0.75)
+        s = pd.to_numeric(df[col], errors="coerce")
+        Q1 = s.quantile(0.25)
+        Q3 = s.quantile(0.75)
         IQR = Q3 - Q1
         lower = Q1 - 1.5 * IQR
         upper = Q3 + 1.5 * IQR
-        df[col] = np.where(df[col] < lower, lower, df[col])
-        df[col] = np.where(df[col] > upper, upper, df[col])
+        s_clipped = np.where(s < lower, lower, s)
+        s_clipped = np.where(s_clipped > upper, upper, s_clipped)
+        df[col] = s_clipped
     return df
 
 
@@ -124,7 +129,11 @@ def transform_skewed(df: pd.DataFrame, cols):
     if not cols_present:
         return df, pd.Series(dtype=float), []
 
-    skewness = df[cols_present].skew()
+    # Ensure numeric for skewness calculation
+    for col in cols_present:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    skewness = df[cols_present].skew(numeric_only=True)
     # consider columns with |skew| > 1 as skewed
     skewed_cols = skewness[skewness.abs() > 1].index.tolist()
 
@@ -132,6 +141,8 @@ def transform_skewed(df: pd.DataFrame, cols):
         # shift to be positive before log1p if necessary
         min_val = df[col].min()
         shift = 0
+        if pd.isna(min_val):
+            continue
         if min_val <= 0:
             shift = abs(min_val) + 1e-6
         df[col] = np.log1p(df[col] + shift)
@@ -164,10 +175,10 @@ def preprocess_for_model(df: pd.DataFrame):
     if len(available_targets) == 2:
         df = df.dropna(subset=available_targets)
 
-    # Handle missing
+    # Handle missing (and coerce numeric)
     df = handle_missing_values(df)
 
-    # Outlier handling
+    # Outlier handling (on numeric)
     df = cap_outliers_iqr(df, NUMERIC_COLS)
 
     # Skew transform (before scaling)
@@ -573,12 +584,12 @@ def main():
             fig_rl = plot_bar(importances_rl.head(10), "Top 10 Feature Importances (Risk_Level)", "Features")
             st.pyplot(fig_rl)
         else:
-            st.warning(f"Target column '{TARGET_RISK_LEVEL}' not found; cannot compute feature importance for Risk_Level.")
+            st.warning(f"Target column '{TARGET_RISK_LEVEL}' not found; cannot compute feature importance for Risk-Level.")
 
         st.subheader("Summary of Feature Relevance")
         st.write(
             "You can discuss which features consistently appear in the top ranks for both Risk_Type "
-            "and Risk_Level, and interpret their environmental meaning."
+            "and Risk-Level, and interpret their environmental meaning."
         )
 
     elif page == "Classification Modeling (Tasks 4, 5 & 7)":
@@ -586,24 +597,24 @@ def main():
 
         df_clean, X, y_type, y_level, _, _ = preprocess_for_model(df_raw)
 
-        tab1, tab2 = st.tabs(["Risk_Type Models", "Risk_Level Models"])
+        tab1, tab2 = st.tabs(["Risk-Type Models", "Risk-Level Models"])
 
         with tab1:
             if y_type is None:
-                st.warning(f"Target column '{TARGET_RISK_TYPE}' not found; cannot train models for Risk_Type.")
+                st.warning(f"Target column '{TARGET_RISK_TYPE}' not found; cannot train models for Risk-Type.")
             else:
-                st.subheader("Models for Risk_Type")
+                st.subheader("Models for Risk-Type")
                 models_rt, metrics_rt = train_models(X, y_type)
 
-                st.write("Performance Metrics – Risk_Type")
+                st.write("Performance Metrics – Risk-Type")
                 st.dataframe(metrics_rt.style.format("{:.3f}"))
 
-                fig_rt = plot_metrics_bar(metrics_rt, "(Risk_Type)")
+                fig_rt = plot_metrics_bar(metrics_rt, "(Risk-Type)")
                 st.pyplot(fig_rt)
 
         with tab2:
             if y_level is None:
-                st.warning(f"Target column '{TARGET_RISK_LEVEL}' not found; cannot train models for Risk_Level.")
+                st.warning(f"Target column '{TARGET_RISK_LEVEL}' not found; cannot train models for Risk-Level.")
             else:
                 st.subheader("Models for Risk-Level")
                 models_rl, metrics_rl = train_models(X, y_level)
