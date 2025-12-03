@@ -270,6 +270,51 @@ div[data-baseweb="select"] span, div[data-baseweb="select"] div{
   color: #06111f !important;
 }
 
+
+/* BaseWeb components (Selectbox/Multiselect) dropdown menu + options */
+div[data-baseweb="popover"], div[data-baseweb="menu"]{
+  background: rgba(15,23,42,0.98) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+}
+
+div[data-baseweb="menu"] *{
+  color: var(--text) !important;
+}
+
+/* Options hover/active */
+div[data-baseweb="menu"] [role="option"]:hover{
+  background: rgba(96,165,250,0.18) !important;
+}
+div[data-baseweb="menu"] [aria-selected="true"]{
+  background: rgba(52,211,153,0.18) !important;
+}
+
+/* Selectbox input area */
+div[data-baseweb="select"] > div{
+  background: rgba(255,255,255,0.06) !important;
+  border: 1px solid var(--border) !important;
+}
+div[data-baseweb="select"] *{
+  color: var(--text) !important;
+}
+
+/* Placeholder text */
+div[data-baseweb="select"] [data-baseweb="placeholder"]{
+  color: rgba(255,255,255,0.72) !important;
+}
+
+/* Dropdown arrow icon */
+div[data-baseweb="select"] svg{
+  fill: var(--text) !important;
+}
+
+/* Fix list items that looked white-on-white */
+div[data-baseweb="menu"] ul, 
+div[data-baseweb="menu"] li{
+  background: transparent !important;
+}
+
 footer{visibility: hidden;}
 </style>
 """
