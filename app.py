@@ -566,9 +566,27 @@ def train_and_eval_models(
     test_size: float = 0.2,
     random_state: int = 42,
 ) -> Tuple[List[Tuple[str, Dict[str, float]]], Dict[str, Pipeline], Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, stratify=y if y.nunique() > 1 else None, random_state=random_state
-    )
+    # --- Clean y to avoid pandas <NA> issues ---
+    y_clean = pd.Series(y).astype("string")
+    mask = y_clean.notna()
+    X = X.loc[mask].copy()
+    y = y_clean.loc[mask].astype(str)
+
+    # --- SAFE TRAIN/TEST SPLIT ---
+    stratify_arg = None
+    if y.nunique() > 1:
+        vc = y.value_counts()
+        if vc.min() >= 2:
+            stratify_arg = y
+
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, stratify=stratify_arg, random_state=random_state
+        )
+    except ValueError:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, stratify=None, random_state=random_state
+        )
 
     preprocessor = make_preprocessor(num_cols, cat_cols)
 
@@ -600,10 +618,27 @@ def train_risktype_with_optional_smote(
     test_size: float = 0.2,
     random_state: int = 42,
 ):
-    """Objective #2: Risk_Type modeling with optional SMOTE (if available)."""
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, stratify=y if y.nunique() > 1 else None, random_state=random_state
-    )
+    # --- Clean y to avoid pandas <NA> issues ---
+    y_clean = pd.Series(y).astype("string")
+    mask = y_clean.notna()
+    X = X.loc[mask].copy()
+    y = y_clean.loc[mask].astype(str)
+
+    # --- SAFE TRAIN/TEST SPLIT ---
+    stratify_arg = None
+    if y.nunique() > 1:
+        vc = y.value_counts()
+        if vc.min() >= 2:
+            stratify_arg = y
+
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, stratify=stratify_arg, random_state=random_state
+        )
+    except ValueError:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, stratify=None, random_state=random_state
+        )
 
     preprocessor = make_preprocessor(num_cols, cat_cols)
 
@@ -1268,7 +1303,18 @@ elif page == "7. Hyperparameter Tuning & Best Model":
         with st.spinner("Training baseline models for comparison..."):
             results, fitted, _ = train_and_eval_models(X, y, num_cols, cat_cols, test_size=0.2)
         # Evaluate tuned LR on a holdout
-        X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+        # Safe holdout split (handles rare classes / missing labels)
+        y_clean = pd.Series(y).astype("string")
+        mask = y_clean.notna()
+        X2 = X.loc[mask].copy()
+        y2 = y_clean.loc[mask].astype(str)
+        stratify_arg = None
+        if y2.nunique() > 1 and y2.value_counts().min() >= 2:
+            stratify_arg = y2
+        try:
+            X_tr, X_te, y_tr, y_te = train_test_split(X2, y2, test_size=0.2, stratify=stratify_arg, random_state=42)
+        except ValueError:
+            X_tr, X_te, y_tr, y_te = train_test_split(X2, y2, test_size=0.2, stratify=None, random_state=42)
         tuned = gs.best_estimator_
         tuned.fit(X_tr, y_tr)
         pred = tuned.predict(X_te)
@@ -1323,7 +1369,17 @@ elif page == "8. Feature Relevance & Summary":
             target = risk_type_col or risk_level_col
         X = df.drop(columns=[target], errors="ignore")
         y = df[target].astype("string")
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+        y_clean = pd.Series(y).astype("string")
+        mask = y_clean.notna()
+        X2 = X.loc[mask].copy()
+        y2 = y_clean.loc[mask].astype(str)
+        stratify_arg = None
+        if y2.nunique() > 1 and y2.value_counts().min() >= 2:
+            stratify_arg = y2
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(X2, y2, test_size=0.2, stratify=stratify_arg, random_state=42)
+        except ValueError:
+            X_train, X_test, y_train, y_test = train_test_split(X2, y2, test_size=0.2, stratify=None, random_state=42)
 
     top_k = st.slider("Top K features (importance)", 5, 50, 20, 1)
 
