@@ -561,6 +561,17 @@ def main():
             fig = plot_box_by_category(df_raw, "Risk_Score", "Risk_Level")
             st.pyplot(fig)
 
+        # ---------- Interpretation ----------
+        st.markdown("### Interpretation")
+        st.markdown(
+            """
+            - The raw table confirms that key variables such as **MP_Count_per_L**, **Risk_Score**, and risk labels are present.
+            - The **histogram and boxplot** of Risk_Score show how risk values are distributed and whether there are extreme outliers.
+            - The **scatter plot** between MP_Count_per_L and Risk_Score indicates whether higher microplastic concentrations are associated with higher risk scores.
+            - The **boxplot by Risk_Level** shows if higher Risk_Level categories generally correspond to higher numerical Risk_Score values, which checks the consistency of the labeling.
+            """
+        )
+
     elif page == "Preprocessing (Task 2)":
         st.header("Task 2: Preprocessing")
 
@@ -595,6 +606,17 @@ def main():
             st.write(f"Number of samples (y_type): {len(y_type)}, classes: {y_type.unique()}")
         if y_level is not None:
             st.write(f"Number of samples (y_level): {len(y_level)}, classes: {y_level.unique()}")
+
+        # ---------- Interpretation ----------
+        st.markdown("### Interpretation")
+        st.markdown(
+            """
+            - Preprocessing **cleans the raw data** by handling missing values, outliers, and skewness in numeric variables.
+            - After preprocessing, the descriptive statistics show more stable ranges and reduced influence of extreme values.
+            - The **skewness values** indicate which numeric variables were heavily skewed and therefore required transformation.
+            - The encoded feature matrix **X** confirms that all features are numeric and suitable for machine learning models.
+            """
+        )
 
     elif page == "Feature Selection & Relevance (Task 3 & 6)":
         st.header("Tasks 3 & 6: Feature Selection / Relevance")
@@ -647,6 +669,16 @@ def main():
             "and Risk-Level, and interpret their environmental meaning."
         )
 
+        # ---------- Interpretation ----------
+        st.markdown("### Interpretation")
+        st.markdown(
+            """
+            - The **feature importance scores** show which variables contribute the most to predicting Risk_Type and Risk_Level.
+            - Features that appear near the top for both targets are likely to be **key environmental drivers of risk**.
+            - This helps to explain **which microplastic and environmental factors** are most influential in determining pollution risk.
+            """
+        )
+
     elif page == "Classification Modeling (Tasks 4, 5 & 7)":
         st.header("Tasks 4, 5 & 7: Classification Modeling")
 
@@ -696,6 +728,16 @@ def main():
             "You can use these results in your thesis to justify the chosen model for deployment."
         )
 
+        # ---------- Interpretation ----------
+        st.markdown("### Interpretation")
+        st.markdown(
+            """
+            - The performance tables and bar charts summarize how well each model predicts **Risk_Type** and **Risk_Level**.
+            - **Accuracy** shows overall correctness, while **precision, recall, and F1-score** show how well the model handles different classes.
+            - The model with the highest F1-score is generally the most balanced and is a strong candidate for deployment in the decision-support system.
+            """
+        )
+
     elif page == "Polymer Type Distribution":
         st.header("Polymer Type Distribution (Task: Load & Visualize Polymer Type)")
 
@@ -711,6 +753,16 @@ def main():
             st.pyplot(fig)
         else:
             st.warning("Column 'Polymer_Type' not found in the dataset.")
+
+        # ---------- Interpretation ----------
+        st.markdown("### Interpretation")
+        st.markdown(
+            """
+            - The table and bar chart show which **polymer types** are most frequently detected in the samples.
+            - Dominant polymers likely represent the **main sources of microplastic pollution**, such as packaging, textiles, or fishing gear.
+            - This information is useful for identifying **priority sources** to target in pollution control and management strategies.
+            """
+        )
 
     elif page == "SMOTE & Hyperparameter Tuning (Risk_Type)":
         st.header("Address Class Imbalance & Tune Logistic Regression (Risk-Type)")
@@ -759,6 +811,17 @@ def main():
                 st.pyplot(fig_combined)
         except ValueError as e:
             st.warning(f"Could not run SMOTE/tuning: {e}")
+
+        # ---------- Interpretation ----------
+        st.markdown("### Interpretation")
+        st.markdown(
+            """
+            - The **class distribution** reveals whether some Risk_Type categories are much rarer than others, which can bias the models.
+            - SMOTE helps to **balance the classes** by creating synthetic examples for minority classes.
+            - Hyperparameter tuning improves the logistic regression model to better handle the balanced data.
+            - Comparing base models with the tuned SMOTE model shows whether **class balancing** leads to better and fairer prediction performance.
+            """
+        )
 
 
 if __name__ == "__main__":
