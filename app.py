@@ -312,33 +312,66 @@ def smote_and_tune_logreg(X, y):
 # VISUALIZATION HELPERS
 # -------------------------------------------------------
 def plot_hist_box(df, col):
+    # Coerce to numeric (invalid values -> NaN)
+    s = pd.to_numeric(df[col], errors="coerce").dropna()
+
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
-    sns.histplot(df[col].dropna(), kde=True, ax=axes[0])
-    axes[0].set_title(f"Histogram of {col}")
+    if len(s) == 0:
+        axes[0].text(0.5, 0.5, f"No numeric data for {col}", ha="center", va="center")
+        axes[1].text(0.5, 0.5, f"No numeric data for {col}", ha="center", va="center")
+    else:
+        sns.histplot(s, kde=True, ax=axes[0])
+        axes[0].set_title(f"Histogram of {col}")
 
-    sns.boxplot(x=df[col].dropna(), ax=axes[1])
-    axes[1].set_title(f"Boxplot of {col}")
+        sns.boxplot(x=s, ax=axes[1])
+        axes[1].set_title(f"Boxplot of {col}")
 
     plt.tight_layout()
     return fig
 
 
 def plot_scatter(df, x_col, y_col):
+    # Coerce both to numeric
+    x = pd.to_numeric(df[x_col], errors="coerce")
+    y = pd.to_numeric(df[y_col], errors="coerce")
+
+    mask = x.notna() & y.notna()
+    x_clean = x[mask]
+    y_clean = y[mask]
+
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.scatter(df[x_col], df[y_col], alpha=0.7)
-    ax.set_xlabel(x_col)
-    ax.set_ylabel(y_col)
-    ax.set_title(f"{y_col} vs {x_col}")
+
+    if len(x_clean) == 0:
+        ax.text(0.5, 0.5, f"No numeric data for {x_col} and {y_col}",
+                ha="center", va="center")
+    else:
+        ax.scatter(x_clean, y_clean, alpha=0.7)
+        ax.set_xlabel(x_col)
+        ax.set_ylabel(y_col)
+        ax.set_title(f"{y_col} vs {x_col}")
+
     plt.tight_layout()
     return fig
 
 
 def plot_box_by_category(df, value_col, category_col):
+    # Coerce value column to numeric
+    val = pd.to_numeric(df[value_col], errors="coerce")
+    cat = df[category_col]
+
+    data = pd.DataFrame({value_col: val, category_col: cat}).dropna(subset=[value_col])
+
     fig, ax = plt.subplots(figsize=(6, 4))
-    sns.boxplot(data=df, x=category_col, y=value_col, ax=ax)
-    ax.set_title(f"{value_col} by {category_col}")
-    plt.xticks(rotation=45)
+
+    if data.empty:
+        ax.text(0.5, 0.5, f"No numeric data for {value_col}",
+                ha="center", va="center")
+    else:
+        sns.boxplot(data=data, x=category_col, y=value_col, ax=ax)
+        ax.set_title(f"{value_col} by {category_col}")
+        plt.xticks(rotation=45)
+
     plt.tight_layout()
     return fig
 
@@ -534,7 +567,7 @@ def main():
             importances_rl = pd.Series(rf_rl.feature_importances_, index=X.columns)
             importances_rl = importances_rl.sort_values(ascending=False)
 
-            st.write("Top 10 features (Risk_Level):")
+            st.write("Top 10 features (Risk-Level):")
             st.dataframe(importances_rl.head(10))
 
             fig_rl = plot_bar(importances_rl.head(10), "Top 10 Feature Importances (Risk_Level)", "Features")
@@ -572,13 +605,13 @@ def main():
             if y_level is None:
                 st.warning(f"Target column '{TARGET_RISK_LEVEL}' not found; cannot train models for Risk_Level.")
             else:
-                st.subheader("Models for Risk_Level")
+                st.subheader("Models for Risk-Level")
                 models_rl, metrics_rl = train_models(X, y_level)
 
-                st.write("Performance Metrics – Risk_Level")
+                st.write("Performance Metrics – Risk-Level")
                 st.dataframe(metrics_rl.style.format("{:.3f}"))
 
-                fig_rl = plot_metrics_bar(metrics_rl, "(Risk_Level)")
+                fig_rl = plot_metrics_bar(metrics_rl, "(Risk-Level)")
                 st.pyplot(fig_rl)
 
         st.subheader("Comparison & Interpretation")
@@ -604,7 +637,7 @@ def main():
             st.warning("Column 'Polymer_Type' not found in the dataset.")
 
     elif page == "SMOTE & Hyperparameter Tuning (Risk_Type)":
-        st.header("Address Class Imbalance & Tune Logistic Regression (Risk_Type)")
+        st.header("Address Class Imbalance & Tune Logistic Regression (Risk-Type)")
 
         df_clean, X, y_type, y_level, _, _ = preprocess_for_model(df_raw)
 
@@ -612,18 +645,18 @@ def main():
             st.warning(f"Target column '{TARGET_RISK_TYPE}' not found; cannot run SMOTE or tuning.")
             return
 
-        st.subheader("Class Distribution of Risk_Type (Original)")
+        st.subheader("Class Distribution of Risk-Type (Original)")
         st.write(y_type.value_counts())
 
         # Base models performance (for comparison)
         _, base_metrics_rt = train_models(X, y_type)
 
-        st.subheader("Base Models Performance (Risk_Type)")
+        st.subheader("Base Models Performance (Risk-Type)")
         st.dataframe(base_metrics_rt.style.format("{:.3f}"))
-        fig_base = plot_metrics_bar(base_metrics_rt, "(Risk_Type – Base)")
+        fig_base = plot_metrics_bar(base_metrics_rt, "(Risk-Type – Base)")
         st.pyplot(fig_base)
 
-        st.subheader("Applying SMOTE + Hyperparameter Tuning for Logistic Regression (Risk_Type)")
+        st.subheader("Applying SMOTE + Hyperparameter Tuning for Logistic Regression (Risk-Type)")
         with st.spinner("Running SMOTE and GridSearchCV (this may take a bit)..."):
             best_lr, tuned_metrics, best_params = smote_and_tune_logreg(X, y_type)
 
@@ -638,7 +671,7 @@ def main():
         st.subheader("Comparison: Tuned Logistic Regression vs Original Models")
         st.dataframe(combined.style.format("{:.3f}"))
 
-        fig_combined = plot_metrics_bar(combined, "(Risk_Type – Base vs Tuned + SMOTE)")
+        fig_combined = plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned + SMOTE)")
         st.pyplot(fig_combined)
 
 
