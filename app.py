@@ -11,6 +11,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 
 from imblearn.over_sampling import SMOTE
+from pandas.errors import EmptyDataError, ParserError
 
 # -------------------------------------------------------
 # CONFIG
@@ -47,37 +48,33 @@ TARGET_RISK_LEVEL = "Risk_Level"
 # DATA LOADING
 # -------------------------------------------------------
 @st.cache_data
-def load_data(uploaded_file=None, path: str = "MicroPlastic.csv"):
+def load_data(uploaded_file=None, path: str = "Microplastic.csv"):
     """
-    If a file is uploaded, read that.
-    Otherwise, try to read MicroPlastic.csv from disk.
-    Uses a permissive encoding to avoid UnicodeDecodeError.
+    Load CSV from uploaded file or local path.
+    Tries multiple encodings to avoid UnicodeDecodeError.
+    Raises EmptyDataError if the file has no readable content.
     """
-    # Try UTF-8 first, then fall back to latin1
-    encodings_to_try = ["utf-8", "latin1"]
-
-    # Source is either uploaded file or local path
     src = uploaded_file if uploaded_file is not None else path
+    encodings_to_try = ["latin1", "utf-8", "cp1252"]
 
     last_err = None
     for enc in encodings_to_try:
         try:
             df = pd.read_csv(src, encoding=enc)
             return df
-        except UnicodeDecodeError as e:
+        except (UnicodeDecodeError, EmptyDataError, ParserError) as e:
             last_err = e
             continue
         except FileNotFoundError:
-            # Only makes sense for local path
+            # Only relevant for local path
             if uploaded_file is None:
                 raise
 
-    # If we get here, it was an encoding issue
+    # If all encodings fail, re-raise the last error
     if last_err is not None:
-        # Re-raise so we can catch it in main() and show a friendly message
         raise last_err
 
-    return None  # fallback (shouldn't normally hit)
+    return None
 
 
 # -------------------------------------------------------
@@ -123,7 +120,6 @@ def cap_outliers_iqr(df: pd.DataFrame, cols) -> pd.DataFrame:
 
 def transform_skewed(df: pd.DataFrame, cols):
     df = df.copy()
-    # Keep only numeric columns that actually exist
     cols_present = [c for c in cols if c in df.columns]
     if not cols_present:
         return df, pd.Series(dtype=float), []
@@ -156,14 +152,14 @@ def preprocess_for_model(df: pd.DataFrame):
     Returns:
         df_clean        - after missing, outliers, skew transform, scaling
         X               - feature matrix (encoded)
-        y_type          - Risk_Type labels
-        y_level         - Risk_Level labels
-        skewness        - original skewness of numeric columns
+        y_type          - Risk_Type labels (or None)
+        y_level         - Risk_Level labels (or None)
+        skewness        - skewness of numeric columns used
         skewed_cols     - list of skewed numeric columns
     """
     df = df.copy()
 
-    # Keep only rows where both targets are present
+    # Keep only rows where both targets are present (if they exist)
     available_targets = [c for c in [TARGET_RISK_TYPE, TARGET_RISK_LEVEL] if c in df.columns]
     if len(available_targets) == 2:
         df = df.dropna(subset=available_targets)
@@ -181,15 +177,8 @@ def preprocess_for_model(df: pd.DataFrame):
     df, scaler = scale_numeric(df, NUMERIC_COLS)
 
     # Separate targets
-    if TARGET_RISK_TYPE in df.columns:
-        y_type = df[TARGET_RISK_TYPE]
-    else:
-        y_type = None
-
-    if TARGET_RISK_LEVEL in df.columns:
-        y_level = df[TARGET_RISK_LEVEL]
-    else:
-        y_level = None
+    y_type = df[TARGET_RISK_TYPE] if TARGET_RISK_TYPE in df.columns else None
+    y_level = df[TARGET_RISK_LEVEL] if TARGET_RISK_LEVEL in df.columns else None
 
     # Drop targets from features
     drop_cols = [c for c in [TARGET_RISK_TYPE, TARGET_RISK_LEVEL] if c in df.columns]
@@ -408,18 +397,33 @@ def main():
     # -------------------------------
     st.sidebar.subheader("Data source")
     uploaded_file = st.sidebar.file_uploader(
-        "Upload MicroPlastic CSV",
+        "Upload Microplastic CSV",
         type=["csv"],
-        help="If you don't upload anything, the app will try to use 'MicroPlastic.csv' from the app folder."
+        help="If you don't upload anything, the app will try to use 'Microplastic.csv' from the app folder."
     )
 
     try:
         df_raw = load_data(uploaded_file=uploaded_file)
     except UnicodeDecodeError:
         st.error(
-            "⚠️ I couldn't decode your file as text.\n\n"
-            "Please make sure you uploaded a **CSV text file** (not Excel) and, if needed, "
-            "re-export it from Excel/Sheets using UTF-8 encoding."
+            "⚠️ Unable to decode the file as text.\n\n"
+            "Please make sure you uploaded a valid **CSV text file** (not Excel). "
+            "If needed, re-export it from Excel/Sheets as CSV."
+        )
+        st.stop()
+    except EmptyDataError:
+        st.error(
+            "⚠️ The file appears to be **empty or has no readable CSV data**.\n\n"
+            "Please open it locally and check that:\n"
+            "- It has a header row with column names, and\n"
+            "- There are data rows under the header.\n\n"
+            "Then save/export it again as a proper CSV and re-upload."
+        )
+        st.stop()
+    except ParserError:
+        st.error(
+            "⚠️ The file is not a proper CSV. "
+            "Please re-export it from Excel/Sheets using 'Save As → CSV (Comma delimited)'."
         )
         st.stop()
     except FileNotFoundError:
@@ -429,8 +433,8 @@ def main():
         st.error(
             "❌ No dataset found.\n\n"
             "Either:\n"
-            "- Upload your `MicroPlastic.csv` file using the sidebar, **or**\n"
-            "- Place a file named `MicroPlastic.csv` in the same folder as `app.py`."
+            "- Upload your `Microplastic.csv` file using the sidebar, **or**\n"
+            "- Place a file named `Microplastic.csv` in the same folder as `app.py`."
         )
         st.stop()
 
