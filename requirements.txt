@@ -2,7 +2,6 @@ streamlit
 pandas
 numpy
 scikit-learn
+imbalanced-learn
 matplotlib
 seaborn
-openpyxl
-imbalanced-learn
