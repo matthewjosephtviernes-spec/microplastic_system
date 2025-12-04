@@ -74,13 +74,11 @@ def load_data(uploaded_file=None, path: str = "Microplastic.csv"):
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    # Numeric: force numeric + median impute
     for col in NUMERIC_COLS:
         if col in df.columns:
             s = pd.to_numeric(df[col], errors="coerce")
             df[col] = s.fillna(s.median())
 
-    # Categorical: mode impute
     for col in CATEGORICAL_COLS:
         if col in df.columns:
             mode_val = df[col].mode(dropna=True)
@@ -139,13 +137,8 @@ def scale_numeric(df: pd.DataFrame, cols):
 
 
 def preprocess_for_model(df: pd.DataFrame):
-    """
-    Returns:
-      df_clean, X, y_type, y_level, skewness, skewed_cols
-    """
     df = df.copy()
 
-    # If both exist, ensure targets aren't missing
     if TARGET_RISK_TYPE in df.columns and TARGET_RISK_LEVEL in df.columns:
         df = df.dropna(subset=[TARGET_RISK_TYPE, TARGET_RISK_LEVEL])
 
@@ -162,8 +155,6 @@ def preprocess_for_model(df: pd.DataFrame):
 
     existing_cat_cols = [c for c in CATEGORICAL_COLS if c in feature_df.columns]
     X = pd.get_dummies(feature_df, columns=existing_cat_cols, drop_first=True)
-
-    # Ensure numeric for sklearn
     X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
 
     return df, X, y_type, y_level, skewness, skewed_cols
@@ -181,12 +172,6 @@ def merge_rare_classes(y: pd.Series, min_count: int = 2, other_label: str = "Oth
 
 
 def safe_train_test_split(X, y, test_size=0.2, random_state=42):
-    """
-    Try stratified split. If it fails:
-      - adjust test_size if possible
-      - if impossible, fallback to non-stratified split
-    Returns: (X_train, X_test, y_train, y_test), used_stratify(bool), final_test_size(float)
-    """
     y = pd.Series(y)
     mask = y.notna()
     X = X.loc[mask]
@@ -200,16 +185,13 @@ def safe_train_test_split(X, y, test_size=0.2, random_state=42):
     n = len(y)
     k = y.nunique()
 
-    # If any class has 1 sample => impossible to stratify into both train and test
     if min_class < 2:
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=test_size, random_state=random_state, stratify=None
         )
         return (X_train, X_test, y_train, y_test), False, float(test_size)
 
-    # Theoretical minimum test_size to have >= 1 sample per class in test
     min_test_size = k / n
-    # Theoretical maximum test_size to still have >= 1 sample per class in train
     max_test_size = 1 - (k / n)
 
     ts = float(test_size)
@@ -281,7 +263,6 @@ def train_models(X, y, test_size=0.2):
     for name, model in models.items():
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
-
         metrics_list.append({
             "Model": name,
             "Accuracy": accuracy_score(y_test, y_pred),
@@ -330,7 +311,6 @@ def smote_and_tune_logreg(X, y, test_size=0.2):
         "final_test_size": final_test_size,
     }
 
-    # SMOTE on train only
     smote_used = True
     try:
         smote = SMOTE(random_state=42)
@@ -377,7 +357,6 @@ def plot_hist_box(df, col):
     else:
         sns.histplot(s, kde=True, ax=axes[0])
         axes[0].set_title(f"Histogram of {col}")
-
         sns.boxplot(x=s, ax=axes[1])
         axes[1].set_title(f"Boxplot of {col}")
 
@@ -398,17 +377,6 @@ def plot_scatter(df, x_col, y_col):
         ax.set_xlabel(x_col)
         ax.set_ylabel(y_col)
         ax.set_title(f"{y_col} vs {x_col}")
-    plt.tight_layout()
-    return fig
-
-
-def plot_bar(value_counts, title, xlabel, ylabel="Count"):
-    fig, ax = plt.subplots(figsize=(6, 4))
-    value_counts.plot(kind="bar", ax=ax)
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    plt.xticks(rotation=45)
     plt.tight_layout()
     return fig
 
@@ -435,7 +403,6 @@ def plot_box_by_category_readable(
     horizontal=True,
 ):
     val = pd.to_numeric(df[value_col], errors="coerce")
-
     cat = (
         df[category_col]
         .astype(str)
@@ -465,19 +432,55 @@ def plot_box_by_category_readable(
 
     if horizontal:
         sns.boxplot(data=data, y=category_col, x=value_col, order=order, ax=ax)
-        ax.set_xlabel(value_col)
-        ax.set_ylabel(category_col)
     else:
         sns.boxplot(data=data, x=category_col, y=value_col, order=order, ax=ax)
         ax.tick_params(axis="x", labelrotation=35)
         for label in ax.get_xticklabels():
             label.set_horizontalalignment("right")
-        ax.set_xlabel(category_col)
-        ax.set_ylabel(value_col)
 
     ax.set_title(f"{value_col} by {category_col} (Top {top_n} + {other_label})")
     plt.tight_layout()
     return fig
+
+
+# ✅ NEW: readable Polymer_Type bar (Top N + Other) + horizontal
+def plot_categorical_topn_bar(
+    series: pd.Series,
+    title: str,
+    top_n: int = 15,
+    other_label: str = "Other",
+    figsize=(10, 6),
+):
+    """
+    Makes a readable categorical bar plot:
+      - keeps top N categories (by count)
+      - groups the rest into 'Other'
+      - uses a horizontal bar chart (best for long labels)
+    """
+    s = series.dropna().astype(str).str.strip()
+    s = s.replace({"": np.nan, "nan": np.nan, "None": np.nan}).dropna()
+    counts = s.value_counts()
+
+    if counts.empty:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.text(0.5, 0.5, "No category data available", ha="center", va="center")
+        plt.tight_layout()
+        return fig, counts
+
+    top = counts.head(top_n)
+    remainder = counts.iloc[top_n:].sum()
+
+    if remainder > 0:
+        top = pd.concat([top, pd.Series({other_label: remainder})])
+
+    # Plot horizontal for label readability
+    fig, ax = plt.subplots(figsize=figsize)
+    top.sort_values().plot(kind="barh", ax=ax)
+    ax.set_title(title)
+    ax.set_xlabel("Count")
+    ax.set_ylabel(series.name if series.name else "Category")
+    plt.tight_layout()
+    return fig, counts
 
 
 # -------------------------------------------------------
@@ -560,9 +563,8 @@ def main():
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - The **histogram** shows the frequency of Risk_Score values.
-                    - The **boxplot** summarizes dispersion and flags potential outliers.
-                    - A clustered distribution at higher scores suggests many sampling points are high risk.
+                    - The histogram shows frequency of Risk_Score values.
+                    - The boxplot summarizes dispersion and flags potential outliers.
                     """
                 )
             else:
@@ -575,9 +577,8 @@ def main():
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - Each dot represents a sampling record.
                     - If an upward trend exists, higher microplastic concentration tends to correspond to higher risk.
-                    - If points are widely scattered, risk may depend strongly on other factors beyond microplastic counts.
+                    - If scattered, other variables likely contribute to risk.
                     """
                 )
             else:
@@ -599,8 +600,7 @@ def main():
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - This compares the distribution of Risk_Score across Risk_Level categories.
-                    - Ideally, higher Risk_Level groups should show higher median Risk_Score.
+                    - This compares Risk_Score distributions across Risk_Level categories.
                     - Overlap suggests borderline samples or thresholds that may require refinement.
                     """
                 )
@@ -610,7 +610,6 @@ def main():
     # -------------------- PAGE 2 --------------------
     elif page == "Preprocessing (Task 2)":
         st.header("Task 2: Preprocessing")
-
         df_clean, X, y_type, y_level, skewness, skewed_cols = preprocess_for_model(df_raw)
 
         tab1, tab2, tab3, tab4 = st.tabs([
@@ -628,9 +627,8 @@ def main():
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - This provides baseline statistics before cleaning.
-                    - Extreme maximum values may indicate outliers.
-                    - Non-normal distributions motivate transformations and scaling.
+                    - Baseline statistics before cleaning.
+                    - Large ranges and extreme maxima suggest outliers and skewness.
                     """
                 )
             else:
@@ -644,8 +642,8 @@ def main():
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - Outliers are capped and skewed features transformed to stabilize distributions.
-                    - Scaling makes feature ranges comparable which improves model learning.
+                    - Outlier capping and transformations stabilize numeric distributions.
+                    - Scaling improves comparability across features.
                     """
                 )
             else:
@@ -662,8 +660,8 @@ def main():
             st.markdown("**Interpretation:**")
             st.markdown(
                 """
-                - Skewness quantifies how asymmetric a feature distribution is.
-                - Highly skewed features often benefit from log transformation to reduce long tails.
+                - Skewness measures distribution asymmetry.
+                - Log-transform helps reduce long tails and improve stability.
                 """
             )
 
@@ -671,12 +669,11 @@ def main():
             st.subheader("Encoded Feature Matrix (X) – First 10 Rows")
             st.dataframe(X.head(10))
             st.write("Shape of X:", X.shape)
-
             st.markdown("**Interpretation:**")
             st.markdown(
                 """
-                - Categorical variables are converted to numeric columns using one-hot encoding.
-                - The resulting feature matrix is suitable for machine-learning algorithms.
+                - Categorical variables are converted into numeric features (one-hot encoding).
+                - The feature matrix is ready for machine learning.
                 """
             )
 
@@ -687,8 +684,8 @@ def main():
 
         st.markdown(
             """
-            A **Random Forest** model is used to estimate feature importance.
-            Higher importance indicates stronger contribution to the prediction.
+            A **Random Forest** model estimates feature importance.
+            Higher importance indicates stronger contribution to prediction.
             """
         )
 
@@ -703,13 +700,13 @@ def main():
 
                 st.write("Top 10 features (Risk_Type):")
                 st.dataframe(importances_rt.head(10))
-                st.pyplot(plot_bar(importances_rt.head(10), "Top 10 Feature Importances (Risk_Type)", "Features"))
+                fig, _ = plot_categorical_topn_bar(importances_rt.head(10), "Top 10 Feature Importances (Risk_Type)", top_n=10)
+                st.pyplot(fig)
 
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - The top-ranked features are most useful for distinguishing Risk_Type categories.
-                    - These predictors can be highlighted as key contributors in the thesis discussion.
+                    - The top-ranked features contribute most strongly to Risk_Type prediction.
                     """
                 )
             else:
@@ -724,13 +721,16 @@ def main():
 
                 st.write("Top 10 features (Risk_Level):")
                 st.dataframe(importances_rl.head(10))
-                st.pyplot(plot_bar(importances_rl.head(10), "Top 10 Feature Importances (Risk_Level)", "Features"))
+                fig = plt.figure(figsize=(8, 4))
+                importances_rl.head(10).sort_values().plot(kind="barh")
+                plt.title("Top 10 Feature Importances (Risk_Level)")
+                plt.tight_layout()
+                st.pyplot(fig)
 
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - Features with higher importance are stronger indicators of the Risk_Level category.
-                    - Overlapping top features across both targets suggests robust risk indicators.
+                    - The top-ranked features contribute most strongly to Risk_Level prediction.
                     """
                 )
             else:
@@ -748,96 +748,84 @@ def main():
                 st.warning("Risk_Type column not found; cannot train models for Risk-Type.")
             else:
                 st.subheader("Models for Risk-Type")
-                try:
-                    _, metrics_rt, split_info_rt, split_note_rt, merge_note_rt = train_models(X, y_type)
-                except ValueError as e:
-                    st.warning(f"Could not train Risk-Type models: {e}")
-                    metrics_rt, split_info_rt, split_note_rt, merge_note_rt = None, None, None, None
+                _, metrics_rt, split_info_rt, split_note_rt, merge_note_rt = train_models(X, y_type)
 
-                if metrics_rt is not None:
-                    st.write("Performance Metrics – Risk-Type")
-                    st.dataframe(metrics_rt.style.format("{:.3f}"))
-                    st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type)"))
-                    st.info(split_note_rt)
+                st.write("Performance Metrics – Risk-Type")
+                st.dataframe(metrics_rt.style.format("{:.3f}"))
+                st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type)"))
+                st.info(split_note_rt)
 
-                    if merge_note_rt is not None:
-                        with st.expander("Rare-class merging details (small classes → 'Other')"):
-                            st.write("Before:")
-                            st.write(merge_note_rt["before"])
-                            st.write("After:")
-                            st.write(merge_note_rt["after"])
+                if merge_note_rt is not None:
+                    with st.expander("Rare-class merging details (small classes → 'Other')"):
+                        st.write("Before:")
+                        st.write(merge_note_rt["before"])
+                        st.write("After:")
+                        st.write(merge_note_rt["after"])
 
-                    st.markdown("**Train–Test Split (Risk-Type):**")
-                    st.markdown(
-                        f"""
-                        - Training set shape: `{split_info_rt['X_train_shape']}`  
-                        - Test set shape: `{split_info_rt['X_test_shape']}`
-                        """
-                    )
-                    st.write("Class distribution in **training set**:")
-                    st.write(split_info_rt["y_train_counts"])
-                    st.write("Class distribution in **test set**:")
-                    st.write(split_info_rt["y_test_counts"])
+                st.markdown("**Train–Test Split (Risk-Type):**")
+                st.markdown(
+                    f"""
+                    - Training set shape: `{split_info_rt['X_train_shape']}`  
+                    - Test set shape: `{split_info_rt['X_test_shape']}`
+                    """
+                )
+                st.write("Class distribution in **training set**:")
+                st.write(split_info_rt["y_train_counts"])
+                st.write("Class distribution in **test set**:")
+                st.write(split_info_rt["y_test_counts"])
 
-                    st.markdown("**Interpretation:**")
-                    st.markdown(
-                        """
-                        - The table and chart compare the performance of different models for Risk_Type.
-                        - F1-score is often preferred in imbalanced datasets because it balances precision and recall.
-                        - Stratified splitting maintains class proportions; merging rare classes improves stability when samples are limited.
-                        """
-                    )
+                st.markdown("**Interpretation:**")
+                st.markdown(
+                    """
+                    - Compare models using F1-score when classes are imbalanced.
+                    - Stratified split preserves proportions; rare-class merging improves stability.
+                    """
+                )
 
         with tab2:
             if y_level is None:
                 st.warning("Risk_Level column not found; cannot train models for Risk-Level.")
             else:
                 st.subheader("Models for Risk-Level")
-                try:
-                    _, metrics_rl, split_info_rl, split_note_rl, merge_note_rl = train_models(X, y_level)
-                except ValueError as e:
-                    st.warning(f"Could not train Risk-Level models: {e}")
-                    metrics_rl, split_info_rl, split_note_rl, merge_note_rl = None, None, None, None
+                _, metrics_rl, split_info_rl, split_note_rl, merge_note_rl = train_models(X, y_level)
 
-                if metrics_rl is not None:
-                    st.write("Performance Metrics – Risk-Level")
-                    st.dataframe(metrics_rl.style.format("{:.3f}"))
-                    st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level)"))
-                    st.info(split_note_rl)
+                st.write("Performance Metrics – Risk-Level")
+                st.dataframe(metrics_rl.style.format("{:.3f}"))
+                st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level)"))
+                st.info(split_note_rl)
 
-                    if merge_note_rl is not None:
-                        with st.expander("Rare-class merging details (small classes → 'Other')"):
-                            st.write("Before:")
-                            st.write(merge_note_rl["before"])
-                            st.write("After:")
-                            st.write(merge_note_rl["after"])
+                if merge_note_rl is not None:
+                    with st.expander("Rare-class merging details (small classes → 'Other')"):
+                        st.write("Before:")
+                        st.write(merge_note_rl["before"])
+                        st.write("After:")
+                        st.write(merge_note_rl["after"])
 
-                    st.markdown("**Train–Test Split (Risk-Level):**")
-                    st.markdown(
-                        f"""
-                        - Training set shape: `{split_info_rl['X_train_shape']}`  
-                        - Test set shape: `{split_info_rl['X_test_shape']}`
-                        """
-                    )
-                    st.write("Class distribution in **training set**:")
-                    st.write(split_info_rl["y_train_counts"])
-                    st.write("Class distribution in **test set**:")
-                    st.write(split_info_rl["y_test_counts"])
+                st.markdown("**Train–Test Split (Risk-Level):**")
+                st.markdown(
+                    f"""
+                    - Training set shape: `{split_info_rl['X_train_shape']}`  
+                    - Test set shape: `{split_info_rl['X_test_shape']}`
+                    """
+                )
+                st.write("Class distribution in **training set**:")
+                st.write(split_info_rl["y_train_counts"])
+                st.write("Class distribution in **test set**:")
+                st.write(split_info_rl["y_test_counts"])
 
-                    st.markdown("**Interpretation:**")
-                    st.markdown(
-                        """
-                        - These models predict the Risk_Level category.
-                        - Stable evaluation requires each class to appear in both train and test, which is why stratification is preferred.
-                        - When some classes are tiny, merging them into 'Other' prevents unreliable splits and evaluation.
-                        """
-                    )
+                st.markdown("**Interpretation:**")
+                st.markdown(
+                    """
+                    - Metrics evaluate the ability to classify Risk_Level categories.
+                    - Small classes may be merged into 'Other' to enable stable splitting.
+                    """
+                )
 
         st.subheader("Overall Interpretation")
         st.markdown(
             """
-            - Comparing models helps identify the best algorithm for each target.
-            - Showing the train/test split and class distributions improves transparency and supports reproducibility.
+            - Evaluation quality depends on whether each class appears in both train and test sets.
+            - The app automatically attempts stratification and stabilizes evaluation using rare-class merging.
             """
         )
 
@@ -847,32 +835,46 @@ def main():
         df = handle_missing_values(df_raw)
 
         if "Polymer_Type" in df.columns:
-            vc = df["Polymer_Type"].value_counts()
+            # Normalize Polymer_Type strings for cleaner grouping
+            polymer = df["Polymer_Type"].astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "None": np.nan})
+            polymer = polymer.dropna()
 
-            col1, col2 = st.columns([1, 1])
-            with col1:
+            vc = polymer.value_counts()
+
+            tabA, tabB = st.tabs(["Counts Table", "Readable Plot (Top N + Other)"])
+
+            with tabA:
                 st.subheader("Value Counts of Polymer_Type")
                 st.dataframe(vc.rename("count"))
-
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - This table shows how often each polymer type appears in the dataset.
-                    - Polymer types with the highest counts likely represent the most common sources of microplastics in the study area.
+                    - This table lists each Polymer_Type and its frequency.
+                    - Many unique text labels can appear due to inconsistent naming; normalization helps consolidate categories.
                     """
                 )
 
-            with col2:
-                st.subheader("Bar Plot of Polymer_Type Distribution")
-                st.pyplot(plot_bar(vc, "Distribution of Polymer_Type", "Polymer_Type"))
+            with tabB:
+                st.subheader("Bar Plot of Polymer_Type Distribution (Readable)")
+                top_n = st.slider("Show Top N polymer types", min_value=5, max_value=30, value=15, step=1)
+                fig, full_counts = plot_categorical_topn_bar(
+                    polymer,
+                    title=f"Distribution of Polymer_Type (Top {top_n} + Other)",
+                    top_n=top_n,
+                    other_label="Other",
+                    figsize=(10, 7),
+                )
+                st.pyplot(fig)
 
                 st.markdown("**Interpretation:**")
                 st.markdown(
-                    """
-                    - Taller bars indicate more frequent polymer types.
-                    - This visualization highlights dominant polymers that can guide mitigation strategies (e.g., packaging or textiles).
+                    f"""
+                    - This plot shows the **Top {top_n} most common** polymer types and groups the remaining types under **'Other'**.
+                    - A horizontal bar chart is used so long polymer names remain readable.
+                    - The dominant polymers can indicate the most probable sources of microplastic pollution in the study area.
                     """
                 )
+
         else:
             st.warning("Column 'Polymer_Type' not found in the dataset.")
 
@@ -885,10 +887,7 @@ def main():
             st.warning("Risk_Type column not found; cannot run SMOTE or tuning.")
             return
 
-        tab1, tab2 = st.tabs([
-            "Original Distribution & Base Models",
-            "SMOTE + Tuning & Comparison",
-        ])
+        tab1, tab2 = st.tabs(["Original Distribution & Base Models", "SMOTE + Tuning & Comparison"])
 
         with tab1:
             st.subheader("Class Distribution of Risk-Type (Original)")
@@ -897,94 +896,74 @@ def main():
             st.markdown("**Interpretation:**")
             st.markdown(
                 """
-                - If some Risk_Type classes have far fewer samples than others, this indicates class imbalance.
-                - Class imbalance can bias models toward the majority class and reduce recall for minority classes.
+                - If some classes have very few samples, the dataset is imbalanced.
+                - Imbalance can cause models to favor the majority class, lowering recall for minority classes.
                 """
             )
 
-            try:
-                _, base_metrics_rt, split_info_base_rt, split_note_base, merge_note_base = train_models(X, y_type)
-            except ValueError as e:
-                st.warning(f"Could not train base Risk-Type models: {e}")
-                base_metrics_rt, split_info_base_rt, split_note_base, merge_note_base = None, None, None, None
+            _, base_metrics_rt, split_info_base_rt, split_note_base, merge_note_base = train_models(X, y_type)
 
-            if base_metrics_rt is not None:
-                st.subheader("Base Models Performance (Risk-Type)")
-                st.dataframe(base_metrics_rt.style.format("{:.3f}"))
-                st.pyplot(plot_metrics_bar(base_metrics_rt, "(Risk-Type – Base)"))
-                st.info(split_note_base)
+            st.subheader("Base Models Performance (Risk-Type)")
+            st.dataframe(base_metrics_rt.style.format("{:.3f}"))
+            st.pyplot(plot_metrics_bar(base_metrics_rt, "(Risk-Type – Base)"))
+            st.info(split_note_base)
 
-                if merge_note_base is not None:
-                    with st.expander("Rare-class merging details (small classes → 'Other')"):
-                        st.write("Before:")
-                        st.write(merge_note_base["before"])
-                        st.write("After:")
-                        st.write(merge_note_base["after"])
+            if merge_note_base is not None:
+                with st.expander("Rare-class merging details (small classes → 'Other')"):
+                    st.write("Before:")
+                    st.write(merge_note_base["before"])
+                    st.write("After:")
+                    st.write(merge_note_base["after"])
 
-                st.markdown("**Train–Test Split (Base Risk-Type Models):**")
-                st.markdown(
-                    f"""
-                    - Training set shape: `{split_info_base_rt['X_train_shape']}`  
-                    - Test set shape: `{split_info_base_rt['X_test_shape']}`
-                    """
-                )
-                st.write("Training distribution:")
-                st.write(split_info_base_rt["y_train_counts"])
-                st.write("Test distribution:")
-                st.write(split_info_base_rt["y_test_counts"])
-
-                st.markdown("**Interpretation (Base Models):**")
-                st.markdown(
-                    """
-                    - These are baseline results before applying SMOTE or tuning.
-                    - Lower F1-score is common when minority classes are difficult to detect.
-                    """
-                )
+            st.markdown("**Train–Test Split (Base):**")
+            st.markdown(
+                f"""
+                - Training set shape: `{split_info_base_rt['X_train_shape']}`  
+                - Test set shape: `{split_info_base_rt['X_test_shape']}`
+                """
+            )
 
         with tab2:
             st.subheader("SMOTE + Hyperparameter Tuning")
+            with st.spinner("Running SMOTE + GridSearchCV..."):
+                best_lr, tuned_metrics, best_params, split_info_smote, split_note_smote, merge_note_smote, smote_used = (
+                    smote_and_tune_logreg(X, y_type)
+                )
+
+            st.write("Best Hyperparameters (Logistic Regression):")
+            st.json(best_params)
+            st.info(split_note_smote)
+
+            if not smote_used:
+                st.warning("SMOTE could not be applied due to very small minority classes; tuning continued without SMOTE.")
+
+            if merge_note_smote is not None:
+                with st.expander("Rare-class merging details (small classes → 'Other')"):
+                    st.write("Before:")
+                    st.write(merge_note_smote["before"])
+                    st.write("After:")
+                    st.write(merge_note_smote["after"])
+
+            st.subheader("Tuned Logistic Regression Performance")
+            st.dataframe(tuned_metrics.style.format("{:.3f}"))
+
+            # Compare base vs tuned
             try:
-                with st.spinner("Running SMOTE + GridSearchCV..."):
-                    best_lr, tuned_metrics, best_params, split_info_smote, split_note_smote, merge_note_smote, smote_used = (
-                        smote_and_tune_logreg(X, y_type)
-                    )
+                _, base_metrics_compare, _, _, _ = train_models(X, y_type)
+                combined = pd.concat([base_metrics_compare, tuned_metrics])
+                st.subheader("Comparison: Tuned Logistic Regression vs Base Models")
+                st.dataframe(combined.style.format("{:.3f}"))
+                st.pyplot(plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned)"))
 
-                st.write("Best Hyperparameters (Logistic Regression):")
-                st.json(best_params)
-                st.info(split_note_smote)
-
-                if not smote_used:
-                    st.warning("SMOTE could not be applied due to very small minority classes; tuning continued without SMOTE.")
-
-                if merge_note_smote is not None:
-                    with st.expander("Rare-class merging details (small classes → 'Other')"):
-                        st.write("Before:")
-                        st.write(merge_note_smote["before"])
-                        st.write("After:")
-                        st.write(merge_note_smote["after"])
-
-                st.subheader("Tuned Logistic Regression Performance")
-                st.dataframe(tuned_metrics.style.format("{:.3f}"))
-
-                # Compare base models vs tuned LR
-                try:
-                    _, base_metrics_compare, _, _, _ = train_models(X, y_type)
-                    combined = pd.concat([base_metrics_compare, tuned_metrics])
-                    st.subheader("Comparison: Tuned Logistic Regression vs Original Models")
-                    st.dataframe(combined.style.format("{:.3f}"))
-                    st.pyplot(plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned)"))
-
-                    st.markdown("**Interpretation (Comparison):**")
-                    st.markdown(
-                        """
-                        - Improvements in recall and F1-score suggest the tuned model detects minority classes better.
-                        - If improvements are small, the dataset may be too limited and collecting more samples may be needed.
-                        """
-                    )
-                except ValueError:
-                    st.warning("Could not recompute base models for comparison.")
-            except ValueError as e:
-                st.warning(f"Could not run SMOTE/tuning: {e}")
+                st.markdown("**Interpretation (Comparison):**")
+                st.markdown(
+                    """
+                    - If tuned model improves recall and F1-score, it indicates better detection of minority classes.
+                    - If improvements are minimal, more data or feature refinement may be required.
+                    """
+                )
+            except ValueError:
+                st.warning("Could not generate base-vs-tuned comparison due to limited class sizes.")
 
 
 if __name__ == "__main__":
