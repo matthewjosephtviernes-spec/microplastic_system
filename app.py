@@ -7,7 +7,6 @@ import seaborn as sns
 from sklearn.model_selection import (
     train_test_split,
     GridSearchCV,
-    StratifiedKFold,
     RepeatedStratifiedKFold,
     cross_validate,
 )
@@ -46,21 +45,33 @@ TARGET_RISK_TYPE = "Risk_Type"
 TARGET_RISK_LEVEL = "Risk_Level"
 
 # -------------------------------------------------------
-# DATA LOADING
+# DATA LOADING (CLOUD-STABLE)
 # -------------------------------------------------------
 @st.cache_data
 def load_data(uploaded_file=None, path: str = "Microplastic.csv"):
     """
     Load CSV from uploaded file or local path.
     Tries multiple encodings to avoid UnicodeDecodeError.
+
+    Cloud stability:
+    - validates empty/invalid CSV early
+    - strips column name whitespace
     """
     src = uploaded_file if uploaded_file is not None else path
-    encodings_to_try = ["latin1", "utf-8", "cp1252"]
+    encodings_to_try = ["latin1", "utf-8", "cp1252", "utf-8-sig"]
 
     last_err = None
     for enc in encodings_to_try:
         try:
             df = pd.read_csv(src, encoding=enc)
+
+            # Validation guard (prevents downstream crashes)
+            if df is None or df.shape[0] == 0 or df.shape[1] == 0:
+                raise EmptyDataError("CSV is empty or has no usable columns/rows.")
+
+            # Strip common column whitespace issues
+            df.columns = [c.strip() for c in df.columns]
+
             return df
         except (UnicodeDecodeError, EmptyDataError, ParserError) as e:
             last_err = e
@@ -84,7 +95,10 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     for col in NUMERIC_COLS:
         if col in df.columns:
             s = pd.to_numeric(df[col], errors="coerce")
-            df[col] = s.fillna(s.median())
+            if s.notna().sum() == 0:
+                df[col] = 0.0
+            else:
+                df[col] = s.fillna(s.median())
 
     # Categorical: mode impute
     for col in CATEGORICAL_COLS:
@@ -92,24 +106,34 @@ def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
             mode_val = df[col].mode(dropna=True)
             if len(mode_val) > 0:
                 df[col] = df[col].fillna(mode_val.iloc[0])
+            else:
+                df[col] = df[col].fillna("Unknown")
 
     return df
 
 
 def cap_outliers_iqr(df: pd.DataFrame, cols) -> pd.DataFrame:
+    """
+    Cloud stability: use pandas .clip() instead of np.where
+    to preserve dtype + alignment.
+    """
     df = df.copy()
     for col in cols:
         if col not in df.columns:
             continue
         s = pd.to_numeric(df[col], errors="coerce")
+        if s.notna().sum() == 0:
+            df[col] = 0.0
+            continue
+
         q1 = s.quantile(0.25)
         q3 = s.quantile(0.75)
         iqr = q3 - q1
         low = q1 - 1.5 * iqr
         high = q3 + 1.5 * iqr
-        clipped = np.where(s < low, low, s)
-        clipped = np.where(clipped > high, high, clipped)
-        df[col] = clipped
+
+        df[col] = s.clip(lower=low, upper=high)
+
     return df
 
 
@@ -242,11 +266,12 @@ def safe_train_test_split(X, y, test_size=0.2, random_state=42):
 
 
 # -------------------------------------------------------
-# MODELS + EVALUATION
+# MODELS + EVALUATION (CLOUD-STABLE)
 # -------------------------------------------------------
 def get_models():
+    # Cloud stability: avoid n_jobs=-1
     return {
-        "Logistic Regression": LogisticRegression(max_iter=1000, multi_class="auto", n_jobs=-1),
+        "Logistic Regression": LogisticRegression(max_iter=1000, multi_class="auto"),
         "Random Forest": RandomForestClassifier(n_estimators=200, random_state=42),
         "Gradient Boosting": GradientBoostingClassifier(random_state=42),
     }
@@ -319,6 +344,7 @@ def repeated_stratified_validate_models(X, y, n_splits=5, n_repeats=10, random_s
     Repeated Stratified K-Fold validation.
     If smallest class can't support requested n_splits, it reduces to the maximum allowed
     and repeats to increase stability.
+
     Returns:
       cv_df, effective_folds, used_repeats, min_class, limiting_classes
     """
@@ -363,7 +389,7 @@ def repeated_stratified_validate_models(X, y, n_splits=5, n_repeats=10, random_s
             y_merged,
             cv=cv,
             scoring=scoring,
-            n_jobs=-1,
+            n_jobs=1,  # Cloud-stable
             error_score="raise"
         )
 
@@ -389,6 +415,9 @@ def smote_and_tune_logreg(X, y, test_size=0.2):
       - safe split (prefer stratified)
       - SMOTE on train if possible
       - GridSearchCV tuning LogisticRegression
+
+    Cloud stability:
+      - GridSearchCV uses n_jobs=1
     """
     y = pd.Series(y)
     mask = y.notna()
@@ -437,11 +466,11 @@ def smote_and_tune_logreg(X, y, test_size=0.2):
     param_grid = {"C": [0.01, 0.1, 1, 10], "penalty": ["l2"], "solver": ["lbfgs"]}
 
     grid = GridSearchCV(
-        LogisticRegression(max_iter=1000, multi_class="auto", n_jobs=-1),
+        LogisticRegression(max_iter=1000, multi_class="auto"),
         param_grid=param_grid,
         scoring="f1_weighted",
         cv=5,
-        n_jobs=-1,
+        n_jobs=1,  # Cloud-stable
     )
     grid.fit(X_res, y_res)
 
@@ -1142,4 +1171,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
