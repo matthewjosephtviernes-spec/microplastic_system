@@ -1,4 +1,3 @@
-import hashlib
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -10,8 +9,8 @@ from sklearn.model_selection import StratifiedKFold, KFold, cross_validate
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
-
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
+
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
@@ -47,48 +46,6 @@ CATEGORICAL_COLS = [
 
 TARGET_RISK_TYPE = "Risk_Type"
 TARGET_RISK_LEVEL = "Risk_Level"
-
-
-# -------------------------------------------------------
-# PERFORMANCE / SPEED CONTROLS
-# -------------------------------------------------------
-def get_perf_settings(mode: str):
-    if mode == "Fast":
-        return {"rf_estimators": 80, "grid_cv": 3, "cv_n_jobs": -1, "hist_kde": False}
-    if mode == "Accurate":
-        return {"rf_estimators": 300, "grid_cv": 5, "cv_n_jobs": -1, "hist_kde": True}
-    return {"rf_estimators": 150, "grid_cv": 4, "cv_n_jobs": -1, "hist_kde": True}
-
-
-def make_models(speed_mode: str, rf_estimators: int):
-    """
-    Speed-optimized model presets (Quick is MUCH faster on wide one-hot data).
-    """
-    if speed_mode == "Quick":
-        return {
-            "Logistic Regression": LogisticRegression(
-                max_iter=600, solver="saga", n_jobs=-1, multi_class="auto"
-            ),
-            "Random Forest": RandomForestClassifier(
-                n_estimators=min(rf_estimators, 80),
-                max_depth=12,
-                min_samples_leaf=2,
-                n_jobs=-1,
-                random_state=42,
-            ),
-            "Gradient Boosting": GradientBoostingClassifier(
-                n_estimators=80,
-                learning_rate=0.1,
-                max_depth=3,
-                random_state=42,
-            ),
-        }
-
-    return {
-        "Logistic Regression": LogisticRegression(max_iter=1000, solver="lbfgs", multi_class="auto"),
-        "Random Forest": RandomForestClassifier(n_estimators=rf_estimators, n_jobs=-1, random_state=42),
-        "Gradient Boosting": GradientBoostingClassifier(random_state=42),
-    }
 
 
 # -------------------------------------------------------
@@ -184,6 +141,14 @@ def scale_numeric(df: pd.DataFrame, cols):
     return df, scaler
 
 
+def merge_rare_classes(y: pd.Series, min_count: int = 2, other_label: str = "Other"):
+    y = pd.Series(y).copy()
+    counts = y.value_counts(dropna=True)
+    rare = counts[counts < min_count].index
+    y = y.where(~y.isin(rare), other_label)
+    return y
+
+
 def limit_cardinality_column(series: pd.Series, top_n=30, other_label="Other"):
     s = series.astype(str).str.strip()
     s = s.replace({"": np.nan, "nan": np.nan, "None": np.nan})
@@ -192,8 +157,13 @@ def limit_cardinality_column(series: pd.Series, top_n=30, other_label="Other"):
     return np.where(s.isin(keep), s, other_label)
 
 
-def preprocess_for_model(df: pd.DataFrame, limit_high_cardinality: bool = True, top_n_card: int = 30):
-    df = df.copy()
+@st.cache_data(show_spinner=False)
+def preprocess_for_model_cached(df_raw: pd.DataFrame, fast_mode: bool):
+    """
+    Cached preprocessing to speed up page loads.
+    fast_mode: limits high-cardinality columns to reduce one-hot explosion.
+    """
+    df = df_raw.copy()
 
     if TARGET_RISK_TYPE in df.columns and TARGET_RISK_LEVEL in df.columns:
         df = df.dropna(subset=[TARGET_RISK_TYPE, TARGET_RISK_LEVEL])
@@ -209,33 +179,21 @@ def preprocess_for_model(df: pd.DataFrame, limit_high_cardinality: bool = True, 
     drop_cols = [c for c in [TARGET_RISK_TYPE, TARGET_RISK_LEVEL] if c in df.columns]
     feature_df = df.drop(columns=drop_cols)
 
-    # HUGE speed win: collapse high-cardinality categories BEFORE get_dummies
-    if limit_high_cardinality:
+    # Silent + safe speed improvement: reduce high-cardinality categories
+    cardinality_report = {}
+    if fast_mode:
         for c in ["Location", "Author"]:
             if c in feature_df.columns:
-                feature_df[c] = limit_cardinality_column(feature_df[c], top_n=top_n_card, other_label="Other")
+                before = feature_df[c].nunique(dropna=True)
+                feature_df[c] = limit_cardinality_column(feature_df[c], top_n=30, other_label="Other")
+                after = pd.Series(feature_df[c]).nunique(dropna=True)
+                cardinality_report[c] = {"before": int(before), "after": int(after)}
 
     existing_cat_cols = [c for c in CATEGORICAL_COLS if c in feature_df.columns]
     X = pd.get_dummies(feature_df, columns=existing_cat_cols, drop_first=True)
     X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
 
-    return df, X, y_type, y_level, skewness, skewed_cols
-
-
-@st.cache_data(show_spinner=False)
-def preprocess_for_model_cached(df_raw: pd.DataFrame, limit_high_cardinality: bool, top_n_card: int):
-    return preprocess_for_model(df_raw, limit_high_cardinality=limit_high_cardinality, top_n_card=top_n_card)
-
-
-# -------------------------------------------------------
-# SPLIT HELPERS (STRATIFY FIX)
-# -------------------------------------------------------
-def merge_rare_classes(y: pd.Series, min_count: int = 2, other_label: str = "Other"):
-    y = pd.Series(y).copy()
-    counts = y.value_counts(dropna=True)
-    rare = counts[counts < min_count].index
-    y = y.where(~y.isin(rare), other_label)
-    return y
+    return df, X, y_type, y_level, skewness, skewed_cols, cardinality_report
 
 
 def safe_train_test_split(X, y, test_size=0.2, random_state=42):
@@ -281,14 +239,30 @@ def safe_train_test_split(X, y, test_size=0.2, random_state=42):
     return (X_train, X_test, y_train, y_test), False, float(test_size)
 
 
-# -------------------------------------------------------
-# MODEL TRAINING (cached)
-# -------------------------------------------------------
-def train_models(X, y, test_size=0.2, rf_estimators: int = 200, speed_mode: str = "Quick", selected_models=None):
-    y = pd.Series(y)
-    mask = y.notna()
-    X = X.loc[mask]
-    y = y.loc[mask].astype(str)
+def make_models(fast_mode: bool):
+    if fast_mode:
+        return {
+            "Logistic Regression": LogisticRegression(max_iter=600, solver="saga", n_jobs=-1, multi_class="auto"),
+            "Random Forest": RandomForestClassifier(
+                n_estimators=80, max_depth=12, min_samples_leaf=2, n_jobs=-1, random_state=42
+            ),
+            "Gradient Boosting": GradientBoostingClassifier(n_estimators=80, learning_rate=0.1, max_depth=3, random_state=42),
+        }
+    return {
+        "Logistic Regression": LogisticRegression(max_iter=1000, solver="lbfgs", multi_class="auto"),
+        "Random Forest": RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=42),
+        "Gradient Boosting": GradientBoostingClassifier(random_state=42),
+    }
+
+
+@st.cache_data(show_spinner=False)
+def cached_train_all_models(X: pd.DataFrame, y: pd.Series, test_size: float, fast_mode: bool):
+    """
+    Cached model training for the modeling page.
+    Returns metrics + notes; cached so page revisits become instant.
+    """
+    y = pd.Series(y).dropna().astype(str)
+    X = X.loc[y.index]
 
     if y.nunique() < 2:
         raise ValueError("Need at least 2 classes in the target to train models.")
@@ -299,7 +273,7 @@ def train_models(X, y, test_size=0.2, rf_estimators: int = 200, speed_mode: str 
 
     merge_note = None
     if not before_counts.equals(after_counts):
-        merge_note = {"before": before_counts, "after": after_counts}
+        merge_note = {"before": before_counts.to_dict(), "after": after_counts.to_dict()}
 
     (X_train, X_test, y_train, y_test), used_stratify, final_test_size = safe_train_test_split(
         X, y_merged, test_size=test_size, random_state=42
@@ -314,18 +288,16 @@ def train_models(X, y, test_size=0.2, rf_estimators: int = 200, speed_mode: str 
     split_info = {
         "X_train_shape": X_train.shape,
         "X_test_shape": X_test.shape,
-        "y_train_counts": y_train.value_counts(),
-        "y_test_counts": y_test.value_counts(),
+        "y_train_counts": y_train.value_counts().to_dict(),
+        "y_test_counts": y_test.value_counts().to_dict(),
         "used_stratify": used_stratify,
         "final_test_size": final_test_size,
     }
 
-    models_all = make_models(speed_mode=speed_mode, rf_estimators=rf_estimators)
-    if selected_models:
-        models_all = {k: v for k, v in models_all.items() if k in selected_models}
+    models = make_models(fast_mode=fast_mode)
 
     metrics_list = []
-    for name, model in models_all.items():
+    for name, model in models.items():
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
         metrics_list.append({
@@ -340,34 +312,9 @@ def train_models(X, y, test_size=0.2, rf_estimators: int = 200, speed_mode: str 
     return metrics_df, split_info, split_note, merge_note
 
 
-@st.cache_data(show_spinner=False)
-def cached_train_models(X: pd.DataFrame, y: pd.Series, test_size: float, rf_estimators: int, speed_mode: str, selected_models_tuple):
-    metrics_df, split_info, split_note, merge_note = train_models(
-        X, y, test_size=test_size, rf_estimators=rf_estimators, speed_mode=speed_mode,
-        selected_models=list(selected_models_tuple) if selected_models_tuple else None
-    )
-
-    split_info_slim = {
-        "X_train_shape": split_info["X_train_shape"],
-        "X_test_shape": split_info["X_test_shape"],
-        "y_train_counts": split_info["y_train_counts"].to_dict(),
-        "y_test_counts": split_info["y_test_counts"].to_dict(),
-        "used_stratify": split_info["used_stratify"],
-        "final_test_size": split_info["final_test_size"],
-    }
-
-    merge_note_slim = None
-    if merge_note is not None:
-        merge_note_slim = {"before": merge_note["before"].to_dict(), "after": merge_note["after"].to_dict()}
-
-    return metrics_df, split_info_slim, split_note, merge_note_slim
-
-
 def smote_and_tune_logreg(X, y, test_size=0.2, grid_cv: int = 5):
-    y = pd.Series(y)
-    mask = y.notna()
-    X = X.loc[mask]
-    y = y.loc[mask].astype(str)
+    y = pd.Series(y).dropna().astype(str)
+    X = X.loc[y.index]
 
     if y.nunique() < 2:
         raise ValueError("Need at least 2 classes in the target to run SMOTE and tuning.")
@@ -459,32 +406,8 @@ def build_preprocess_pipeline(df_raw: pd.DataFrame):
     return preprocessor
 
 
-@st.cache_data(show_spinner=False)
-def cached_cv(df_raw: pd.DataFrame, target_col: str, model_name: str,
-              n_splits: int, stratified: bool, use_smote: bool, rf_estimators: int, n_jobs: int):
-    summary_df, scores = run_cross_validation(
-        df_raw=df_raw,
-        target_col=target_col,
-        model_name=model_name,
-        n_splits=n_splits,
-        stratified=stratified,
-        use_smote=use_smote,
-        rf_estimators=rf_estimators,
-        n_jobs=n_jobs
-    )
-    # keep scores small-ish
-    slim = {
-        "test_accuracy": scores["test_accuracy"].tolist(),
-        "test_precision_w": scores["test_precision_w"].tolist(),
-        "test_recall_w": scores["test_recall_w"].tolist(),
-        "test_f1_w": scores["test_f1_w"].tolist(),
-    }
-    return summary_df, slim
-
-
 def run_cross_validation(df_raw: pd.DataFrame, target_col: str, model_name: str,
-                         n_splits: int = 5, stratified: bool = True, use_smote: bool = False,
-                         rf_estimators: int = 150, n_jobs: int = -1):
+                         n_splits: int = 5, stratified: bool = True, use_smote: bool = False):
     if target_col not in df_raw.columns:
         raise ValueError(f"Target column '{target_col}' not found.")
 
@@ -499,17 +422,16 @@ def run_cross_validation(df_raw: pd.DataFrame, target_col: str, model_name: str,
 
     models = {
         "Logistic Regression": LogisticRegression(max_iter=2000, multi_class="auto"),
-        "Random Forest": RandomForestClassifier(n_estimators=rf_estimators, random_state=42, n_jobs=-1),
+        "Random Forest": RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1),
         "Gradient Boosting": GradientBoostingClassifier(random_state=42),
     }
     if model_name not in models:
         raise ValueError("Unknown model selected.")
     model = models[model_name]
 
-    if stratified:
-        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-    else:
-        cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42) if stratified else KFold(
+        n_splits=n_splits, shuffle=True, random_state=42
+    )
 
     preprocessor = build_preprocess_pipeline(df_raw)
 
@@ -532,7 +454,7 @@ def run_cross_validation(df_raw: pd.DataFrame, target_col: str, model_name: str,
         "f1_w": "f1_weighted",
     }
 
-    scores = cross_validate(pipe, X, y, cv=cv, scoring=scoring, n_jobs=n_jobs, error_score="raise")
+    scores = cross_validate(pipe, X, y, cv=cv, scoring=scoring, n_jobs=-1, error_score="raise")
 
     summary = {}
     for k in scoring.keys():
@@ -551,7 +473,7 @@ def run_cross_validation(df_raw: pd.DataFrame, target_col: str, model_name: str,
 # -------------------------------------------------------
 # VISUALS
 # -------------------------------------------------------
-def plot_hist_box(df, col, kde=True):
+def plot_hist_box(df, col):
     s = pd.to_numeric(df[col], errors="coerce").dropna()
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
@@ -559,7 +481,7 @@ def plot_hist_box(df, col, kde=True):
         axes[0].text(0.5, 0.5, f"No numeric data for {col}", ha="center", va="center")
         axes[1].text(0.5, 0.5, f"No numeric data for {col}", ha="center", va="center")
     else:
-        sns.histplot(s, kde=kde, ax=axes[0])
+        sns.histplot(s, kde=True, ax=axes[0])
         axes[0].set_title(f"Histogram of {col}")
         sns.boxplot(x=s, ax=axes[1])
         axes[1].set_title(f"Boxplot of {col}")
@@ -678,19 +600,13 @@ def plot_categorical_topn_bar(
 # -------------------------------------------------------
 def main():
     st.title("Microplastic Risk Prediction – Streamlit App")
+    st.markdown(
+        """
+        This app demonstrates the analysis and modeling workflow for predicting **Risk_Type**
+        and **Risk_Level** using microplastic and environmental features.
+        """
+    )
 
-    st.sidebar.header("Performance")
-    perf_mode = st.sidebar.selectbox("Performance mode", ["Fast", "Balanced", "Accurate"], index=0)
-    perf = get_perf_settings(perf_mode)
-
-    st.sidebar.subheader("Model speed mode")
-    model_speed_mode = st.sidebar.selectbox("Model speed", ["Quick", "Balanced"], index=0)
-
-    st.sidebar.subheader("High-cardinality control (Speed Boost)")
-    limit_high_cardinality = st.sidebar.checkbox("Limit Location/Author categories", value=True)
-    top_n_card = st.sidebar.slider("Keep top N categories (Location/Author)", 10, 100, 30, 5)
-
-    st.sidebar.divider()
     st.sidebar.header("Navigation")
     page = st.sidebar.radio(
         "Go to",
@@ -704,6 +620,10 @@ def main():
             "Cross Validation (K-Fold)",
         ],
     )
+
+    st.sidebar.subheader("Performance")
+    fast_mode = st.sidebar.toggle("Fast Mode (recommended)", value=True)
+    test_size = st.sidebar.slider("Test size (modeling)", 0.1, 0.4, 0.2, 0.05)
 
     st.sidebar.subheader("Data source")
     uploaded_file = st.sidebar.file_uploader(
@@ -730,10 +650,8 @@ def main():
         st.error("❌ No dataset found. Upload a CSV or add 'Microplastic.csv' beside app.py.")
         st.stop()
 
-    # Cached preprocessing with high-cardinality controls
-    df_clean, X, y_type, y_level, skewness, skewed_cols = preprocess_for_model_cached(
-        df_raw, limit_high_cardinality=limit_high_cardinality, top_n_card=top_n_card
-    )
+    # One cached preprocessing call shared by all pages (fast + presentable)
+    df_clean, X, y_type, y_level, skewness, skewed_cols, cardinality_report = preprocess_for_model_cached(df_raw, fast_mode)
 
     # -------------------- PAGE 1 --------------------
     if page == "Data Overview & Task 1":
@@ -750,11 +668,25 @@ def main():
             st.subheader("Raw Dataset (first 10 rows)")
             st.dataframe(df_raw.head(10))
             st.markdown(f"**Shape:** `{df_raw.shape[0]}` rows × `{df_raw.shape[1]}` columns")
+            st.markdown(
+                """
+                **Interpretation:**
+                - This section verifies that the dataset is loaded successfully.
+                - The first few rows help confirm that expected columns are present and values look reasonable.
+                """
+            )
 
         with tab2:
             if "Risk_Score" in df_raw.columns:
                 st.subheader("Distribution of Risk_Score (Histogram & Boxplot)")
-                st.pyplot(plot_hist_box(df_raw, "Risk_Score", kde=perf["hist_kde"]))
+                st.pyplot(plot_hist_box(df_raw, "Risk_Score"))
+                st.markdown(
+                    """
+                    **Interpretation:**
+                    - Histogram shows frequency of Risk_Score values.
+                    - Boxplot summarizes dispersion and highlights potential outliers.
+                    """
+                )
             else:
                 st.info("Column 'Risk_Score' not found in the dataset.")
 
@@ -762,6 +694,13 @@ def main():
             if "MP_Count_per_L" in df_raw.columns and "Risk_Score" in df_raw.columns:
                 st.subheader("Relationship between Risk_Score and MP_Count_per_L")
                 st.pyplot(plot_scatter(df_raw, "MP_Count_per_L", "Risk_Score"))
+                st.markdown(
+                    """
+                    **Interpretation:**
+                    - If an upward trend exists, higher microplastic concentration tends to correspond to higher risk.
+                    - If scattered, other variables likely contribute to risk.
+                    """
+                )
             else:
                 st.info("Columns 'MP_Count_per_L' and/or 'Risk_Score' not found.")
 
@@ -777,6 +716,13 @@ def main():
                         figsize=(12, 5),
                         horizontal=True,
                     )
+                )
+                st.markdown(
+                    """
+                    **Interpretation:**
+                    - Compares Risk_Score distributions across Risk_Level categories.
+                    - Overlap suggests borderline samples or thresholds that may require refinement.
+                    """
                 )
             else:
                 st.info("Columns 'Risk_Level' and/or 'Risk_Score' not found.")
@@ -822,69 +768,68 @@ def main():
             st.dataframe(X.head(10))
             st.write("Shape of X:", X.shape)
 
+        if fast_mode and cardinality_report:
+            with st.expander("Fast Mode details (what was optimized)"):
+                st.write("To speed up modeling, high-cardinality columns were grouped into Top-30 + 'Other':")
+                st.json(cardinality_report)
+
     # -------------------- PAGE 3 --------------------
     elif page == "Feature Selection & Relevance (Task 3 & 6)":
         st.header("Tasks 3 & 6: Feature Selection / Relevance")
 
+        st.markdown(
+            """
+            A **Random Forest** model estimates feature importance.
+            Higher importance indicates stronger contribution to prediction.
+            """
+        )
+
         tab_rt, tab_rl = st.tabs(["Risk_Type Feature Importance", "Risk_Level Feature Importance"])
 
         with tab_rt:
-            if y_type is None:
-                st.warning("Risk_Type column not found.")
-            else:
-                if st.button("Compute Feature Importance (Risk_Type)"):
-                    rf = RandomForestClassifier(n_estimators=perf["rf_estimators"], random_state=42, n_jobs=-1)
-                    rf.fit(X, y_type.astype(str))
-                    imp = pd.Series(rf.feature_importances_, index=X.columns).sort_values(ascending=False)
-                    st.session_state["rt_featimp"] = imp
+            if y_type is not None:
+                st.subheader("Random Forest Feature Importance – Risk_Type")
 
-                if "rt_featimp" in st.session_state:
-                    imp = st.session_state["rt_featimp"]
-                    st.dataframe(imp.head(10))
-                    fig = plt.figure(figsize=(8, 4))
-                    imp.head(10).sort_values().plot(kind="barh")
-                    plt.title("Top 10 Feature Importances (Risk_Type)")
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                else:
-                    st.info("Click the button to compute feature importance.")
+                # compute only once per run (cached via session)
+                if "featimp_rt" not in st.session_state:
+                    rf_rt = RandomForestClassifier(n_estimators=150 if fast_mode else 250, random_state=42, n_jobs=-1)
+                    rf_rt.fit(X, y_type.astype(str))
+                    st.session_state["featimp_rt"] = pd.Series(rf_rt.feature_importances_, index=X.columns).sort_values(ascending=False)
+
+                importances_rt = st.session_state["featimp_rt"]
+                st.dataframe(importances_rt.head(10))
+
+                fig = plt.figure(figsize=(8, 4))
+                importances_rt.head(10).sort_values().plot(kind="barh")
+                plt.title("Top 10 Feature Importances (Risk_Type)")
+                plt.tight_layout()
+                st.pyplot(fig)
+            else:
+                st.warning("Risk_Type column not found.")
 
         with tab_rl:
-            if y_level is None:
-                st.warning("Risk_Level column not found.")
+            if y_level is not None:
+                st.subheader("Random Forest Feature Importance – Risk_Level")
+
+                if "featimp_rl" not in st.session_state:
+                    rf_rl = RandomForestClassifier(n_estimators=150 if fast_mode else 250, random_state=42, n_jobs=-1)
+                    rf_rl.fit(X, y_level.astype(str))
+                    st.session_state["featimp_rl"] = pd.Series(rf_rl.feature_importances_, index=X.columns).sort_values(ascending=False)
+
+                importances_rl = st.session_state["featimp_rl"]
+                st.dataframe(importances_rl.head(10))
+
+                fig = plt.figure(figsize=(8, 4))
+                importances_rl.head(10).sort_values().plot(kind="barh")
+                plt.title("Top 10 Feature Importances (Risk_Level)")
+                plt.tight_layout()
+                st.pyplot(fig)
             else:
-                if st.button("Compute Feature Importance (Risk_Level)"):
-                    rf = RandomForestClassifier(n_estimators=perf["rf_estimators"], random_state=42, n_jobs=-1)
-                    rf.fit(X, y_level.astype(str))
-                    imp = pd.Series(rf.feature_importances_, index=X.columns).sort_values(ascending=False)
-                    st.session_state["rl_featimp"] = imp
+                st.warning("Risk_Level column not found.")
 
-                if "rl_featimp" in st.session_state:
-                    imp = st.session_state["rl_featimp"]
-                    st.dataframe(imp.head(10))
-                    fig = plt.figure(figsize=(8, 4))
-                    imp.head(10).sort_values().plot(kind="barh")
-                    plt.title("Top 10 Feature Importances (Risk_Level)")
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                else:
-                    st.info("Click the button to compute feature importance.")
-
-    # -------------------- PAGE 4 (KEY FIXES HERE) --------------------
+    # -------------------- PAGE 4 --------------------
     elif page == "Classification Modeling (Tasks 4, 5 & 7)":
         st.header("Tasks 4, 5 & 7: Classification Modeling")
-
-        st.info(
-            "Speed tips applied: ✅ cached training results ✅ optional model selection ✅ quick model presets ✅ "
-            "high-cardinality category limiting (sidebar)."
-        )
-
-        selected_models = st.multiselect(
-            "Choose models to run (running fewer = faster)",
-            ["Logistic Regression", "Random Forest", "Gradient Boosting"],
-            default=["Logistic Regression", "Random Forest"],
-        )
-        test_size = st.slider("Test size", 0.1, 0.4, 0.2, 0.05)
 
         tab1, tab2 = st.tabs(["Risk-Type Models", "Risk-Level Models"])
 
@@ -892,64 +837,84 @@ def main():
             if y_type is None:
                 st.warning("Risk_Type column not found; cannot train models for Risk-Type.")
             else:
-                if st.button("Run Risk-Type Models", type="primary"):
-                    with st.spinner("Training (cached after first run)..."):
-                        metrics_rt, split_info_rt, split_note_rt, merge_note_rt = cached_train_models(
-                            X, y_type, test_size, perf["rf_estimators"], model_speed_mode, tuple(selected_models)
-                        )
+                st.subheader("Models for Risk-Type")
+                with st.spinner("Training models (cached after first time)..."):
+                    metrics_rt, split_info_rt, split_note_rt, merge_note_rt = cached_train_all_models(
+                        X, y_type, test_size=test_size, fast_mode=fast_mode
+                    )
 
-                    st.dataframe(metrics_rt.round(3))  # faster than style.format
-                    st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type)"))
-                    st.info(split_note_rt)
+                st.dataframe(metrics_rt.round(3))
+                st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type)"))
+                st.info(split_note_rt)
 
-                    if merge_note_rt is not None:
-                        with st.expander("Rare-class merging details (small classes → 'Other')"):
-                            st.write("Before:")
-                            st.write(pd.Series(merge_note_rt["before"]))
-                            st.write("After:")
-                            st.write(pd.Series(merge_note_rt["after"]))
+                if merge_note_rt is not None:
+                    with st.expander("Rare-class merging details (small classes → 'Other')"):
+                        st.write("Before:")
+                        st.write(pd.Series(merge_note_rt["before"]))
+                        st.write("After:")
+                        st.write(pd.Series(merge_note_rt["after"]))
 
-                    st.write("Train distribution:")
-                    st.write(pd.Series(split_info_rt["y_train_counts"]))
-                    st.write("Test distribution:")
-                    st.write(pd.Series(split_info_rt["y_test_counts"]))
-                else:
-                    st.caption("Click the button to run training. Results are cached, so subsequent visits are fast.")
+                st.markdown("**Train–Test Split (Risk-Type):**")
+                st.markdown(
+                    f"""
+                    - Training set shape: `{split_info_rt['X_train_shape']}`  
+                    - Test set shape: `{split_info_rt['X_test_shape']}`
+                    """
+                )
+                st.write("Class distribution in **training set**:")
+                st.write(pd.Series(split_info_rt["y_train_counts"]))
+                st.write("Class distribution in **test set**:")
+                st.write(pd.Series(split_info_rt["y_test_counts"]))
 
         with tab2:
             if y_level is None:
                 st.warning("Risk_Level column not found; cannot train models for Risk-Level.")
             else:
-                if st.button("Run Risk-Level Models", type="primary"):
-                    with st.spinner("Training (cached after first run)..."):
-                        metrics_rl, split_info_rl, split_note_rl, merge_note_rl = cached_train_models(
-                            X, y_level, test_size, perf["rf_estimators"], model_speed_mode, tuple(selected_models)
-                        )
+                st.subheader("Models for Risk-Level")
+                with st.spinner("Training models (cached after first time)..."):
+                    metrics_rl, split_info_rl, split_note_rl, merge_note_rl = cached_train_all_models(
+                        X, y_level, test_size=test_size, fast_mode=fast_mode
+                    )
 
-                    st.dataframe(metrics_rl.round(3))  # faster than style.format
-                    st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level)"))
-                    st.info(split_note_rl)
+                st.dataframe(metrics_rl.round(3))
+                st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level)"))
+                st.info(split_note_rl)
 
-                    if merge_note_rl is not None:
-                        with st.expander("Rare-class merging details (small classes → 'Other')"):
-                            st.write("Before:")
-                            st.write(pd.Series(merge_note_rl["before"]))
-                            st.write("After:")
-                            st.write(pd.Series(merge_note_rl["after"]))
+                if merge_note_rl is not None:
+                    with st.expander("Rare-class merging details (small classes → 'Other')"):
+                        st.write("Before:")
+                        st.write(pd.Series(merge_note_rl["before"]))
+                        st.write("After:")
+                        st.write(pd.Series(merge_note_rl["after"]))
 
-                    st.write("Train distribution:")
-                    st.write(pd.Series(split_info_rl["y_train_counts"]))
-                    st.write("Test distribution:")
-                    st.write(pd.Series(split_info_rl["y_test_counts"]))
-                else:
-                    st.caption("Click the button to run training. Results are cached, so subsequent visits are fast.")
+                st.markdown("**Train–Test Split (Risk-Level):**")
+                st.markdown(
+                    f"""
+                    - Training set shape: `{split_info_rl['X_train_shape']}`  
+                    - Test set shape: `{split_info_rl['X_test_shape']}`
+                    """
+                )
+                st.write("Class distribution in **training set**:")
+                st.write(pd.Series(split_info_rl["y_train_counts"]))
+                st.write("Class distribution in **test set**:")
+                st.write(pd.Series(split_info_rl["y_test_counts"]))
+
+        st.subheader("Overall Interpretation")
+        st.markdown(
+            """
+            - Model evaluation depends on whether each class appears in both train and test sets.
+            - This app attempts stratified splitting and merges tiny classes into **'Other'** for stability.
+            - Turn ON **Fast Mode** (sidebar) to reduce training time when categories are high-cardinality.
+            """
+        )
 
     # -------------------- PAGE 5 --------------------
     elif page == "Polymer Type Distribution":
         st.header("Polymer Type Distribution")
+        df = handle_missing_values(df_raw)
 
-        if "Polymer_Type" in df_raw.columns:
-            polymer = df_raw["Polymer_Type"].astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "None": np.nan})
+        if "Polymer_Type" in df.columns:
+            polymer = df["Polymer_Type"].astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "None": np.nan})
             polymer = polymer.dropna()
             vc = polymer.value_counts()
 
@@ -976,37 +941,34 @@ def main():
     # -------------------- PAGE 6 --------------------
     elif page == "SMOTE & Hyperparameter Tuning (Risk_Type)":
         st.header("Address Class Imbalance & Tune Logistic Regression (Risk-Type)")
+        _, X_local, y_type_local, _, _, _, _ = preprocess_for_model_cached(df_raw, fast_mode)
 
-        if y_type is None:
+        if y_type_local is None:
             st.warning("Risk_Type column not found; cannot run SMOTE or tuning.")
             return
 
-        tab1, tab2 = st.tabs(["Original Distribution & Base Models", "SMOTE + Tuning"])
+        tab1, tab2 = st.tabs(["Original Distribution", "SMOTE + Tuning"])
 
         with tab1:
             st.subheader("Class Distribution of Risk-Type (Original)")
-            st.write(pd.Series(y_type).value_counts())
-
-            st.info("Use the Classification Modeling page for faster base-model runs (cached + selectable models).")
+            st.write(pd.Series(y_type_local).value_counts())
 
         with tab2:
             st.subheader("SMOTE + Hyperparameter Tuning")
+            with st.spinner("Running SMOTE + GridSearchCV..."):
+                best_lr, tuned_metrics, best_params, split_info_smote, split_note_smote, merge_note_smote, smote_used = (
+                    smote_and_tune_logreg(X_local, y_type_local, grid_cv=3 if fast_mode else 5)
+                )
 
-            if st.button("Run SMOTE + GridSearchCV", type="primary"):
-                with st.spinner("Running SMOTE + GridSearchCV..."):
-                    best_lr, tuned_metrics, best_params, split_info_smote, split_note_smote, merge_note_smote, smote_used = (
-                        smote_and_tune_logreg(X, y_type, grid_cv=perf["grid_cv"])
-                    )
+            st.write("Best Hyperparameters:")
+            st.json(best_params)
+            st.info(split_note_smote)
 
-                st.write("Best Hyperparameters:")
-                st.json(best_params)
-                st.info(split_note_smote)
+            if not smote_used:
+                st.warning("SMOTE could not be applied due to very small minority classes; tuning continued without SMOTE.")
 
-                if not smote_used:
-                    st.warning("SMOTE could not be applied due to very small minority classes; tuning continued without SMOTE.")
-
-                st.subheader("Tuned Logistic Regression Performance")
-                st.dataframe(tuned_metrics.round(3))
+            st.subheader("Tuned Logistic Regression Performance")
+            st.dataframe(tuned_metrics.round(3))
 
     # -------------------- PAGE 7 --------------------
     elif page == "Cross Validation (K-Fold)":
@@ -1023,22 +985,19 @@ def main():
         target = st.selectbox("Select target", [TARGET_RISK_TYPE, TARGET_RISK_LEVEL])
         model_name = st.selectbox("Select model", ["Logistic Regression", "Random Forest", "Gradient Boosting"])
         n_splits = st.slider("Number of folds (k)", min_value=3, max_value=10, value=5, step=1)
-        stratified = st.checkbox("Use Stratified K-Fold (recommended for classification)", value=True)
-
+        stratified = st.checkbox("Use Stratified K-Fold (recommended)", value=True)
         use_smote = st.checkbox("Use SMOTE", value=False)
 
         if st.button("Run Cross-Validation", type="primary"):
             try:
-                with st.spinner("Running CV (cached after first run)..."):
-                    summary_df, slim_scores = cached_cv(
+                with st.spinner("Running cross-validation..."):
+                    summary_df, raw_scores = run_cross_validation(
                         df_raw=df_raw,
                         target_col=target,
                         model_name=model_name,
                         n_splits=n_splits,
                         stratified=stratified,
                         use_smote=use_smote,
-                        rf_estimators=max(perf["rf_estimators"], 150),
-                        n_jobs=perf["cv_n_jobs"],
                     )
 
                 st.success("Done!")
@@ -1048,10 +1007,10 @@ def main():
 
                 with st.expander("Show per-fold scores"):
                     fold_df = pd.DataFrame({
-                        "Accuracy": slim_scores["test_accuracy"],
-                        "Precision (weighted)": slim_scores["test_precision_w"],
-                        "Recall (weighted)": slim_scores["test_recall_w"],
-                        "F1-score (weighted)": slim_scores["test_f1_w"],
+                        "Accuracy": raw_scores["test_accuracy"],
+                        "Precision (weighted)": raw_scores["test_precision_w"],
+                        "Recall (weighted)": raw_scores["test_recall_w"],
+                        "F1-score (weighted)": raw_scores["test_f1_w"],
                     })
                     fold_df.index = [f"Fold {i+1}" for i in range(len(fold_df))]
                     st.dataframe(fold_df.round(3))
