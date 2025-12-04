@@ -4,9 +4,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold, cross_validate
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, make_scorer
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 
@@ -217,6 +217,14 @@ def safe_train_test_split(X, y, test_size=0.2, random_state=42):
 # -------------------------------------------------------
 # MODELING
 # -------------------------------------------------------
+def get_models():
+    return {
+        "Logistic Regression": LogisticRegression(max_iter=1000, multi_class="auto", n_jobs=-1),
+        "Random Forest": RandomForestClassifier(n_estimators=200, random_state=42),
+        "Gradient Boosting": GradientBoostingClassifier(random_state=42),
+    }
+
+
 def train_models(X, y, test_size=0.2):
     y = pd.Series(y)
     mask = y.notna()
@@ -253,16 +261,15 @@ def train_models(X, y, test_size=0.2):
         "final_test_size": final_test_size,
     }
 
-    models = {
-        "Logistic Regression": LogisticRegression(max_iter=1000, multi_class="auto", n_jobs=-1),
-        "Random Forest": RandomForestClassifier(n_estimators=200, random_state=42),
-        "Gradient Boosting": GradientBoostingClassifier(random_state=42),
-    }
+    models = get_models()
 
     metrics_list = []
+    trained_models = {}
     for name, model in models.items():
         model.fit(X_train, y_train)
+        trained_models[name] = model
         y_pred = model.predict(X_test)
+
         metrics_list.append({
             "Model": name,
             "Accuracy": accuracy_score(y_test, y_pred),
@@ -272,7 +279,54 @@ def train_models(X, y, test_size=0.2):
         })
 
     metrics_df = pd.DataFrame(metrics_list).set_index("Model")
-    return models, metrics_df, split_info, split_note, merge_note
+    return trained_models, metrics_df, split_info, split_note, merge_note
+
+
+def kfold_validate_models(X, y, n_splits=5, random_state=42):
+    """
+    K-Fold (Stratified) CV evaluation: returns mean±std for Accuracy and F1_weighted.
+    Uses y after merging rare classes for stability.
+    """
+    y = pd.Series(y)
+    mask = y.notna()
+    X = X.loc[mask]
+    y = y.loc[mask]
+
+    if y.nunique() < 2:
+        raise ValueError("Need at least 2 classes in the target to run K-Fold.")
+
+    # Merge rare classes to help stratification inside folds
+    y_merged = merge_rare_classes(y, min_count=2, other_label="Other")
+
+    counts = y_merged.value_counts()
+    min_class = int(counts.min())
+
+    # Ensures each fold can contain at least 1 sample of each class
+    # If min_class < n_splits, reduce splits
+    effective_splits = min(n_splits, min_class)
+    if effective_splits < 2:
+        raise ValueError("Too few samples per class to perform K-Fold validation (need at least 2 folds).")
+
+    cv = StratifiedKFold(n_splits=effective_splits, shuffle=True, random_state=random_state)
+
+    scoring = {
+        "accuracy": "accuracy",
+        "f1_weighted": make_scorer(f1_score, average="weighted", zero_division=0),
+    }
+
+    rows = []
+    for name, model in get_models().items():
+        res = cross_validate(model, X, y_merged, cv=cv, scoring=scoring, n_jobs=-1, error_score="raise")
+        rows.append({
+            "Model": name,
+            "Folds Used": effective_splits,
+            "Accuracy (mean)": np.mean(res["test_accuracy"]),
+            "Accuracy (std)": np.std(res["test_accuracy"]),
+            "F1_weighted (mean)": np.mean(res["test_f1_weighted"]),
+            "F1_weighted (std)": np.std(res["test_f1_weighted"]),
+        })
+
+    return pd.DataFrame(rows).set_index("Model"), effective_splits
 
 
 def smote_and_tune_logreg(X, y, test_size=0.2):
@@ -409,7 +463,6 @@ def plot_box_by_category_readable(
         .str.strip()
         .replace({"": np.nan, "nan": np.nan, "None": np.nan})
     )
-
     data = pd.DataFrame({value_col: val, category_col: cat}).dropna(subset=[value_col, category_col])
 
     fig, ax = plt.subplots(figsize=figsize)
@@ -422,13 +475,7 @@ def plot_box_by_category_readable(
     keep = counts.head(top_n).index
     data[category_col] = np.where(data[category_col].isin(keep), data[category_col], other_label)
 
-    order = (
-        data.groupby(category_col)[value_col]
-        .median()
-        .sort_values()
-        .index
-        .tolist()
-    )
+    order = data.groupby(category_col)[value_col].median().sort_values().index.tolist()
 
     if horizontal:
         sns.boxplot(data=data, y=category_col, x=value_col, order=order, ax=ax)
@@ -443,7 +490,6 @@ def plot_box_by_category_readable(
     return fig
 
 
-# ✅ NEW: readable Polymer_Type bar (Top N + Other) + horizontal
 def plot_categorical_topn_bar(
     series: pd.Series,
     title: str,
@@ -451,12 +497,6 @@ def plot_categorical_topn_bar(
     other_label: str = "Other",
     figsize=(10, 6),
 ):
-    """
-    Makes a readable categorical bar plot:
-      - keeps top N categories (by count)
-      - groups the rest into 'Other'
-      - uses a horizontal bar chart (best for long labels)
-    """
     s = series.dropna().astype(str).str.strip()
     s = s.replace({"": np.nan, "nan": np.nan, "None": np.nan}).dropna()
     counts = s.value_counts()
@@ -469,11 +509,9 @@ def plot_categorical_topn_bar(
 
     top = counts.head(top_n)
     remainder = counts.iloc[top_n:].sum()
-
     if remainder > 0:
         top = pd.concat([top, pd.Series({other_label: remainder})])
 
-    # Plot horizontal for label readability
     fig, ax = plt.subplots(figsize=figsize)
     top.sort_values().plot(kind="barh", ax=ax)
     ax.set_title(title)
@@ -552,7 +590,7 @@ def main():
             st.markdown(
                 """
                 - This section verifies that the dataset is loaded successfully.
-                - The first few rows help confirm that the expected columns are present and values look reasonable.
+                - The first few rows help confirm that expected columns are present and values look reasonable.
                 """
             )
 
@@ -682,13 +720,6 @@ def main():
         st.header("Tasks 3 & 6: Feature Selection / Relevance")
         _, X, y_type, y_level, _, _ = preprocess_for_model(df_raw)
 
-        st.markdown(
-            """
-            A **Random Forest** model estimates feature importance.
-            Higher importance indicates stronger contribution to prediction.
-            """
-        )
-
         tab_rt, tab_rl = st.tabs(["Risk_Type Feature Importance", "Risk_Level Feature Importance"])
 
         with tab_rt:
@@ -700,7 +731,11 @@ def main():
 
                 st.write("Top 10 features (Risk_Type):")
                 st.dataframe(importances_rt.head(10))
-                fig, _ = plot_categorical_topn_bar(importances_rt.head(10), "Top 10 Feature Importances (Risk_Type)", top_n=10)
+
+                fig = plt.figure(figsize=(8, 4))
+                importances_rt.head(10).sort_values().plot(kind="barh")
+                plt.title("Top 10 Feature Importances (Risk_Type)")
+                plt.tight_layout()
                 st.pyplot(fig)
 
                 st.markdown("**Interpretation:**")
@@ -721,6 +756,7 @@ def main():
 
                 st.write("Top 10 features (Risk_Level):")
                 st.dataframe(importances_rl.head(10))
+
                 fig = plt.figure(figsize=(8, 4))
                 importances_rl.head(10).sort_values().plot(kind="barh")
                 plt.title("Top 10 Feature Importances (Risk_Level)")
@@ -747,85 +783,128 @@ def main():
             if y_type is None:
                 st.warning("Risk_Type column not found; cannot train models for Risk-Type.")
             else:
-                st.subheader("Models for Risk-Type")
-                _, metrics_rt, split_info_rt, split_note_rt, merge_note_rt = train_models(X, y_type)
+                st.subheader("Risk-Type Evaluation")
+                subtab_a, subtab_b = st.tabs(["Train/Test Split", "K-Fold Validation"])
 
-                st.write("Performance Metrics – Risk-Type")
-                st.dataframe(metrics_rt.style.format("{:.3f}"))
-                st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type)"))
-                st.info(split_note_rt)
+                with subtab_a:
+                    _, metrics_rt, split_info_rt, split_note_rt, merge_note_rt = train_models(X, y_type)
+                    st.write("Performance Metrics – Risk-Type (Train/Test)")
+                    st.dataframe(metrics_rt.style.format("{:.3f}"))
+                    st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type – Train/Test)"))
+                    st.info(split_note_rt)
 
-                if merge_note_rt is not None:
-                    with st.expander("Rare-class merging details (small classes → 'Other')"):
-                        st.write("Before:")
-                        st.write(merge_note_rt["before"])
-                        st.write("After:")
-                        st.write(merge_note_rt["after"])
+                    if merge_note_rt is not None:
+                        with st.expander("Rare-class merging details (small classes → 'Other')"):
+                            st.write("Before:")
+                            st.write(merge_note_rt["before"])
+                            st.write("After:")
+                            st.write(merge_note_rt["after"])
 
-                st.markdown("**Train–Test Split (Risk-Type):**")
-                st.markdown(
-                    f"""
-                    - Training set shape: `{split_info_rt['X_train_shape']}`  
-                    - Test set shape: `{split_info_rt['X_test_shape']}`
-                    """
-                )
-                st.write("Class distribution in **training set**:")
-                st.write(split_info_rt["y_train_counts"])
-                st.write("Class distribution in **test set**:")
-                st.write(split_info_rt["y_test_counts"])
+                    st.markdown("**Train–Test Split Details:**")
+                    st.markdown(
+                        f"""
+                        - Training set shape: `{split_info_rt['X_train_shape']}`
+                        - Test set shape: `{split_info_rt['X_test_shape']}`
+                        """
+                    )
+                    st.write("Training distribution:")
+                    st.write(split_info_rt["y_train_counts"])
+                    st.write("Test distribution:")
+                    st.write(split_info_rt["y_test_counts"])
 
-                st.markdown("**Interpretation:**")
-                st.markdown(
-                    """
-                    - Compare models using F1-score when classes are imbalanced.
-                    - Stratified split preserves proportions; rare-class merging improves stability.
-                    """
-                )
+                    st.markdown("**Interpretation:**")
+                    st.markdown(
+                        """
+                        - This evaluates performance on one held-out test set.
+                        - F1-score (weighted) is emphasized for imbalanced classes.
+                        """
+                    )
+
+                with subtab_b:
+                    st.write("K-Fold Cross-Validation (Stratified if possible)")
+                    folds = st.slider("Number of folds (Risk-Type)", 2, 10, 5, 1)
+
+                    try:
+                        cv_df, effective_folds = kfold_validate_models(X, y_type, n_splits=folds)
+                        st.dataframe(cv_df.style.format("{:.3f}"))
+                        st.info(f"Used {effective_folds} folds based on smallest class size.")
+
+                        st.markdown("**Interpretation:**")
+                        st.markdown(
+                            """
+                            - K-Fold validation tests model stability across multiple splits.
+                            - Lower standard deviation means more consistent performance.
+                            """
+                        )
+                    except ValueError as e:
+                        st.warning(f"Could not run K-Fold validation: {e}")
 
         with tab2:
             if y_level is None:
                 st.warning("Risk_Level column not found; cannot train models for Risk-Level.")
             else:
-                st.subheader("Models for Risk-Level")
-                _, metrics_rl, split_info_rl, split_note_rl, merge_note_rl = train_models(X, y_level)
+                st.subheader("Risk-Level Evaluation")
+                subtab_a, subtab_b = st.tabs(["Train/Test Split", "K-Fold Validation"])
 
-                st.write("Performance Metrics – Risk-Level")
-                st.dataframe(metrics_rl.style.format("{:.3f}"))
-                st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level)"))
-                st.info(split_note_rl)
+                with subtab_a:
+                    _, metrics_rl, split_info_rl, split_note_rl, merge_note_rl = train_models(X, y_level)
+                    st.write("Performance Metrics – Risk-Level (Train/Test)")
+                    st.dataframe(metrics_rl.style.format("{:.3f}"))
+                    st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level – Train/Test)"))
+                    st.info(split_note_rl)
 
-                if merge_note_rl is not None:
-                    with st.expander("Rare-class merging details (small classes → 'Other')"):
-                        st.write("Before:")
-                        st.write(merge_note_rl["before"])
-                        st.write("After:")
-                        st.write(merge_note_rl["after"])
+                    if merge_note_rl is not None:
+                        with st.expander("Rare-class merging details (small classes → 'Other')"):
+                            st.write("Before:")
+                            st.write(merge_note_rl["before"])
+                            st.write("After:")
+                            st.write(merge_note_rl["after"])
 
-                st.markdown("**Train–Test Split (Risk-Level):**")
-                st.markdown(
-                    f"""
-                    - Training set shape: `{split_info_rl['X_train_shape']}`  
-                    - Test set shape: `{split_info_rl['X_test_shape']}`
-                    """
-                )
-                st.write("Class distribution in **training set**:")
-                st.write(split_info_rl["y_train_counts"])
-                st.write("Class distribution in **test set**:")
-                st.write(split_info_rl["y_test_counts"])
+                    st.markdown("**Train–Test Split Details:**")
+                    st.markdown(
+                        f"""
+                        - Training set shape: `{split_info_rl['X_train_shape']}`
+                        - Test set shape: `{split_info_rl['X_test_shape']}`
+                        """
+                    )
+                    st.write("Training distribution:")
+                    st.write(split_info_rl["y_train_counts"])
+                    st.write("Test distribution:")
+                    st.write(split_info_rl["y_test_counts"])
 
-                st.markdown("**Interpretation:**")
-                st.markdown(
-                    """
-                    - Metrics evaluate the ability to classify Risk_Level categories.
-                    - Small classes may be merged into 'Other' to enable stable splitting.
-                    """
-                )
+                    st.markdown("**Interpretation:**")
+                    st.markdown(
+                        """
+                        - This evaluates performance on one held-out test set.
+                        - F1-score (weighted) is emphasized for imbalanced classes.
+                        """
+                    )
+
+                with subtab_b:
+                    st.write("K-Fold Cross-Validation (Stratified if possible)")
+                    folds = st.slider("Number of folds (Risk-Level)", 2, 10, 5, 1)
+
+                    try:
+                        cv_df, effective_folds = kfold_validate_models(X, y_level, n_splits=folds)
+                        st.dataframe(cv_df.style.format("{:.3f}"))
+                        st.info(f"Used {effective_folds} folds based on smallest class size.")
+
+                        st.markdown("**Interpretation:**")
+                        st.markdown(
+                            """
+                            - K-Fold validation tests model stability across multiple splits.
+                            - Lower standard deviation means more consistent performance.
+                            """
+                        )
+                    except ValueError as e:
+                        st.warning(f"Could not run K-Fold validation: {e}")
 
         st.subheader("Overall Interpretation")
         st.markdown(
             """
-            - Evaluation quality depends on whether each class appears in both train and test sets.
-            - The app automatically attempts stratification and stabilizes evaluation using rare-class merging.
+            - **Train/Test** gives a single unbiased evaluation on unseen data.
+            - **K-Fold Validation** provides a stability check across multiple splits.
+            - Reporting both strengthens the reliability of results for thesis reporting.
             """
         )
 
@@ -835,10 +914,8 @@ def main():
         df = handle_missing_values(df_raw)
 
         if "Polymer_Type" in df.columns:
-            # Normalize Polymer_Type strings for cleaner grouping
             polymer = df["Polymer_Type"].astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "None": np.nan})
             polymer = polymer.dropna()
-
             vc = polymer.value_counts()
 
             tabA, tabB = st.tabs(["Counts Table", "Readable Plot (Top N + Other)"])
@@ -846,18 +923,19 @@ def main():
             with tabA:
                 st.subheader("Value Counts of Polymer_Type")
                 st.dataframe(vc.rename("count"))
+
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
                     - This table lists each Polymer_Type and its frequency.
-                    - Many unique text labels can appear due to inconsistent naming; normalization helps consolidate categories.
+                    - Many unique labels can occur due to naming differences; the plot groups rare types to improve readability.
                     """
                 )
 
             with tabB:
                 st.subheader("Bar Plot of Polymer_Type Distribution (Readable)")
                 top_n = st.slider("Show Top N polymer types", min_value=5, max_value=30, value=15, step=1)
-                fig, full_counts = plot_categorical_topn_bar(
+                fig, _ = plot_categorical_topn_bar(
                     polymer,
                     title=f"Distribution of Polymer_Type (Top {top_n} + Other)",
                     top_n=top_n,
@@ -869,12 +947,10 @@ def main():
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     f"""
-                    - This plot shows the **Top {top_n} most common** polymer types and groups the remaining types under **'Other'**.
-                    - A horizontal bar chart is used so long polymer names remain readable.
-                    - The dominant polymers can indicate the most probable sources of microplastic pollution in the study area.
+                    - Shows the **Top {top_n}** polymer types and groups the rest as **Other**.
+                    - Horizontal bars prevent overlapping labels and improve readability.
                     """
                 )
-
         else:
             st.warning("Column 'Polymer_Type' not found in the dataset.")
 
@@ -918,7 +994,7 @@ def main():
             st.markdown("**Train–Test Split (Base):**")
             st.markdown(
                 f"""
-                - Training set shape: `{split_info_base_rt['X_train_shape']}`  
+                - Training set shape: `{split_info_base_rt['X_train_shape']}`
                 - Test set shape: `{split_info_base_rt['X_test_shape']}`
                 """
             )
@@ -947,21 +1023,12 @@ def main():
             st.subheader("Tuned Logistic Regression Performance")
             st.dataframe(tuned_metrics.style.format("{:.3f}"))
 
-            # Compare base vs tuned
             try:
                 _, base_metrics_compare, _, _, _ = train_models(X, y_type)
                 combined = pd.concat([base_metrics_compare, tuned_metrics])
                 st.subheader("Comparison: Tuned Logistic Regression vs Base Models")
                 st.dataframe(combined.style.format("{:.3f}"))
                 st.pyplot(plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned)"))
-
-                st.markdown("**Interpretation (Comparison):**")
-                st.markdown(
-                    """
-                    - If tuned model improves recall and F1-score, it indicates better detection of minority classes.
-                    - If improvements are minimal, more data or feature refinement may be required.
-                    """
-                )
             except ValueError:
                 st.warning("Could not generate base-vs-tuned comparison due to limited class sizes.")
 
