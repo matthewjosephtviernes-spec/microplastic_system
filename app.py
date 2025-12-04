@@ -4,7 +4,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold, cross_validate
+from sklearn.model_selection import (
+    train_test_split,
+    GridSearchCV,
+    StratifiedKFold,
+    RepeatedStratifiedKFold,
+    cross_validate,
+)
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, make_scorer
 from sklearn.linear_model import LogisticRegression
@@ -74,11 +80,13 @@ def load_data(uploaded_file=None, path: str = "Microplastic.csv"):
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
+    # Numeric: force numeric + median impute
     for col in NUMERIC_COLS:
         if col in df.columns:
             s = pd.to_numeric(df[col], errors="coerce")
             df[col] = s.fillna(s.median())
 
+    # Categorical: mode impute
     for col in CATEGORICAL_COLS:
         if col in df.columns:
             mode_val = df[col].mode(dropna=True)
@@ -137,8 +145,13 @@ def scale_numeric(df: pd.DataFrame, cols):
 
 
 def preprocess_for_model(df: pd.DataFrame):
+    """
+    Returns:
+      df_clean, X, y_type, y_level, skewness, skewed_cols
+    """
     df = df.copy()
 
+    # If both exist, ensure targets aren't missing
     if TARGET_RISK_TYPE in df.columns and TARGET_RISK_LEVEL in df.columns:
         df = df.dropna(subset=[TARGET_RISK_TYPE, TARGET_RISK_LEVEL])
 
@@ -155,6 +168,8 @@ def preprocess_for_model(df: pd.DataFrame):
 
     existing_cat_cols = [c for c in CATEGORICAL_COLS if c in feature_df.columns]
     X = pd.get_dummies(feature_df, columns=existing_cat_cols, drop_first=True)
+
+    # Ensure numeric for sklearn
     X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
 
     return df, X, y_type, y_level, skewness, skewed_cols
@@ -164,6 +179,9 @@ def preprocess_for_model(df: pd.DataFrame):
 # SPLIT HELPERS (STRATIFY FIX)
 # -------------------------------------------------------
 def merge_rare_classes(y: pd.Series, min_count: int = 2, other_label: str = "Other"):
+    """
+    Merge classes with frequency < min_count into 'Other'.
+    """
     y = pd.Series(y).copy()
     counts = y.value_counts(dropna=True)
     rare = counts[counts < min_count].index
@@ -172,6 +190,12 @@ def merge_rare_classes(y: pd.Series, min_count: int = 2, other_label: str = "Oth
 
 
 def safe_train_test_split(X, y, test_size=0.2, random_state=42):
+    """
+    Try stratified split. If it fails:
+      - adjust test_size if possible
+      - if impossible, fallback to non-stratified split
+    Returns: (X_train, X_test, y_train, y_test), used_stratify(bool), final_test_size(float)
+    """
     y = pd.Series(y)
     mask = y.notna()
     X = X.loc[mask]
@@ -185,13 +209,16 @@ def safe_train_test_split(X, y, test_size=0.2, random_state=42):
     n = len(y)
     k = y.nunique()
 
+    # If any class has 1 sample => impossible to stratify into both train and test
     if min_class < 2:
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=test_size, random_state=random_state, stratify=None
         )
         return (X_train, X_test, y_train, y_test), False, float(test_size)
 
+    # Theoretical minimum test_size to have >= 1 sample per class in test
     min_test_size = k / n
+    # Theoretical maximum test_size to still have >= 1 sample per class in train
     max_test_size = 1 - (k / n)
 
     ts = float(test_size)
@@ -215,7 +242,7 @@ def safe_train_test_split(X, y, test_size=0.2, random_state=42):
 
 
 # -------------------------------------------------------
-# MODELING
+# MODELS + EVALUATION
 # -------------------------------------------------------
 def get_models():
     return {
@@ -226,6 +253,11 @@ def get_models():
 
 
 def train_models(X, y, test_size=0.2):
+    """
+    Train models using holdout Train/Test split (tries stratified first).
+    Returns:
+      trained_models, metrics_df, split_info, split_note, merge_note
+    """
     y = pd.Series(y)
     mask = y.notna()
     X = X.loc[mask]
@@ -262,9 +294,9 @@ def train_models(X, y, test_size=0.2):
     }
 
     models = get_models()
-
     metrics_list = []
     trained_models = {}
+
     for name, model in models.items():
         model.fit(X_train, y_train)
         trained_models[name] = model
@@ -282,10 +314,13 @@ def train_models(X, y, test_size=0.2):
     return trained_models, metrics_df, split_info, split_note, merge_note
 
 
-def kfold_validate_models(X, y, n_splits=5, random_state=42):
+def repeated_stratified_validate_models(X, y, n_splits=5, n_repeats=10, random_state=42):
     """
-    K-Fold (Stratified) CV evaluation: returns mean±std for Accuracy and F1_weighted.
-    Uses y after merging rare classes for stability.
+    Repeated Stratified K-Fold validation.
+    If smallest class can't support requested n_splits, it reduces to the maximum allowed
+    and repeats to increase stability.
+    Returns:
+      cv_df, effective_folds, used_repeats, min_class, limiting_classes
     """
     y = pd.Series(y)
     mask = y.notna()
@@ -293,21 +328,27 @@ def kfold_validate_models(X, y, n_splits=5, random_state=42):
     y = y.loc[mask]
 
     if y.nunique() < 2:
-        raise ValueError("Need at least 2 classes in the target to run K-Fold.")
+        raise ValueError("Need at least 2 classes in the target to run cross-validation.")
 
-    # Merge rare classes to help stratification inside folds
+    # Merge rare classes for stability
     y_merged = merge_rare_classes(y, min_count=2, other_label="Other")
-
     counts = y_merged.value_counts()
     min_class = int(counts.min())
+    limiting_classes = counts[counts == min_class].index.tolist()
 
-    # Ensures each fold can contain at least 1 sample of each class
-    # If min_class < n_splits, reduce splits
-    effective_splits = min(n_splits, min_class)
+    # Max possible stratified folds
+    effective_splits = min(int(n_splits), min_class)
+
     if effective_splits < 2:
-        raise ValueError("Too few samples per class to perform K-Fold validation (need at least 2 folds).")
+        raise ValueError(
+            "Too few samples per class for stratified cross-validation (need at least 2 per class)."
+        )
 
-    cv = StratifiedKFold(n_splits=effective_splits, shuffle=True, random_state=random_state)
+    cv = RepeatedStratifiedKFold(
+        n_splits=effective_splits,
+        n_repeats=int(n_repeats),
+        random_state=random_state
+    )
 
     scoring = {
         "accuracy": "accuracy",
@@ -316,20 +357,39 @@ def kfold_validate_models(X, y, n_splits=5, random_state=42):
 
     rows = []
     for name, model in get_models().items():
-        res = cross_validate(model, X, y_merged, cv=cv, scoring=scoring, n_jobs=-1, error_score="raise")
+        res = cross_validate(
+            model,
+            X,
+            y_merged,
+            cv=cv,
+            scoring=scoring,
+            n_jobs=-1,
+            error_score="raise"
+        )
+
         rows.append({
             "Model": name,
             "Folds Used": effective_splits,
-            "Accuracy (mean)": np.mean(res["test_accuracy"]),
-            "Accuracy (std)": np.std(res["test_accuracy"]),
-            "F1_weighted (mean)": np.mean(res["test_f1_weighted"]),
-            "F1_weighted (std)": np.std(res["test_f1_weighted"]),
+            "Repeats": int(n_repeats),
+            "Total Runs": effective_splits * int(n_repeats),
+            "Limiting Class Count": min_class,
+            "Accuracy (mean)": float(np.mean(res["test_accuracy"])),
+            "Accuracy (std)": float(np.std(res["test_accuracy"])),
+            "F1_weighted (mean)": float(np.mean(res["test_f1_weighted"])),
+            "F1_weighted (std)": float(np.std(res["test_f1_weighted"])),
         })
 
-    return pd.DataFrame(rows).set_index("Model"), effective_splits
+    cv_df = pd.DataFrame(rows).set_index("Model")
+    return cv_df, effective_splits, int(n_repeats), min_class, limiting_classes
 
 
 def smote_and_tune_logreg(X, y, test_size=0.2):
+    """
+    Risk_Type only:
+      - safe split (prefer stratified)
+      - SMOTE on train if possible
+      - GridSearchCV tuning LogisticRegression
+    """
     y = pd.Series(y)
     mask = y.notna()
     X = X.loc[mask]
@@ -365,6 +425,7 @@ def smote_and_tune_logreg(X, y, test_size=0.2):
         "final_test_size": final_test_size,
     }
 
+    # SMOTE on train only
     smote_used = True
     try:
         smote = SMOTE(random_state=42)
@@ -411,6 +472,7 @@ def plot_hist_box(df, col):
     else:
         sns.histplot(s, kde=True, ax=axes[0])
         axes[0].set_title(f"Histogram of {col}")
+
         sns.boxplot(x=s, ax=axes[1])
         axes[1].set_title(f"Boxplot of {col}")
 
@@ -463,6 +525,7 @@ def plot_box_by_category_readable(
         .str.strip()
         .replace({"": np.nan, "nan": np.nan, "None": np.nan})
     )
+
     data = pd.DataFrame({value_col: val, category_col: cat}).dropna(subset=[value_col, category_col])
 
     fig, ax = plt.subplots(figsize=figsize)
@@ -479,8 +542,12 @@ def plot_box_by_category_readable(
 
     if horizontal:
         sns.boxplot(data=data, y=category_col, x=value_col, order=order, ax=ax)
+        ax.set_xlabel(value_col)
+        ax.set_ylabel(category_col)
     else:
         sns.boxplot(data=data, x=category_col, y=value_col, order=order, ax=ax)
+        ax.set_xlabel(category_col)
+        ax.set_ylabel(value_col)
         ax.tick_params(axis="x", labelrotation=35)
         for label in ax.get_xticklabels():
             label.set_horizontalalignment("right")
@@ -497,6 +564,12 @@ def plot_categorical_topn_bar(
     other_label: str = "Other",
     figsize=(10, 6),
 ):
+    """
+    Readable categorical bar plot:
+      - keeps top N categories
+      - groups rest into Other
+      - uses horizontal bar chart for long labels
+    """
     s = series.dropna().astype(str).str.strip()
     s = s.replace({"": np.nan, "nan": np.nan, "None": np.nan}).dropna()
     counts = s.value_counts()
@@ -522,7 +595,7 @@ def plot_categorical_topn_bar(
 
 
 # -------------------------------------------------------
-# APP
+# MAIN APP
 # -------------------------------------------------------
 def main():
     st.title("Microplastic Risk Prediction – Streamlit App")
@@ -571,7 +644,9 @@ def main():
         st.error("❌ No dataset found. Upload a CSV or add 'Microplastic.csv' beside app.py.")
         st.stop()
 
-    # -------------------- PAGE 1 --------------------
+    # ---------------------------------------------------
+    # PAGE: Data Overview & Task 1
+    # ---------------------------------------------------
     if page == "Data Overview & Task 1":
         st.header("Data Overview & Task 1: Risk_Score Analysis")
 
@@ -589,8 +664,8 @@ def main():
             st.markdown("**Interpretation:**")
             st.markdown(
                 """
-                - This section verifies that the dataset is loaded successfully.
-                - The first few rows help confirm that expected columns are present and values look reasonable.
+                - This verifies that the dataset is loaded successfully.
+                - The first rows help confirm the correct columns and reasonable values.
                 """
             )
 
@@ -601,8 +676,8 @@ def main():
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - The histogram shows frequency of Risk_Score values.
-                    - The boxplot summarizes dispersion and flags potential outliers.
+                    - Histogram shows frequency of Risk_Score values.
+                    - Boxplot summarizes spread and highlights outliers.
                     """
                 )
             else:
@@ -615,8 +690,8 @@ def main():
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - If an upward trend exists, higher microplastic concentration tends to correspond to higher risk.
-                    - If scattered, other variables likely contribute to risk.
+                    - Upward trend suggests higher microplastic concentration may increase risk.
+                    - If scattered, other variables may contribute more strongly to risk.
                     """
                 )
             else:
@@ -638,14 +713,16 @@ def main():
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - This compares Risk_Score distributions across Risk_Level categories.
-                    - Overlap suggests borderline samples or thresholds that may require refinement.
+                    - Compares Risk_Score distributions across Risk_Level categories.
+                    - Overlap suggests borderline thresholds or mixed conditions.
                     """
                 )
             else:
                 st.info("Columns 'Risk_Level' and/or 'Risk_Score' not found.")
 
-    # -------------------- PAGE 2 --------------------
+    # ---------------------------------------------------
+    # PAGE: Preprocessing (Task 2)
+    # ---------------------------------------------------
     elif page == "Preprocessing (Task 2)":
         st.header("Task 2: Preprocessing")
         df_clean, X, y_type, y_level, skewness, skewed_cols = preprocess_for_model(df_raw)
@@ -666,7 +743,7 @@ def main():
                 st.markdown(
                     """
                     - Baseline statistics before cleaning.
-                    - Large ranges and extreme maxima suggest outliers and skewness.
+                    - Large ranges/extreme maxima may suggest outliers or skew.
                     """
                 )
             else:
@@ -680,8 +757,8 @@ def main():
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - Outlier capping and transformations stabilize numeric distributions.
-                    - Scaling improves comparability across features.
+                    - Outlier capping and transforms stabilize distributions.
+                    - Scaling makes features comparable for modelling.
                     """
                 )
             else:
@@ -698,8 +775,8 @@ def main():
             st.markdown("**Interpretation:**")
             st.markdown(
                 """
-                - Skewness measures distribution asymmetry.
-                - Log-transform helps reduce long tails and improve stability.
+                - Skewness shows distribution asymmetry.
+                - Log transform reduces long tails and supports more stable training.
                 """
             )
 
@@ -710,12 +787,14 @@ def main():
             st.markdown("**Interpretation:**")
             st.markdown(
                 """
-                - Categorical variables are converted into numeric features (one-hot encoding).
-                - The feature matrix is ready for machine learning.
+                - One-hot encoding converts categorical variables into numeric features.
+                - This matrix is used as input to machine learning models.
                 """
             )
 
-    # -------------------- PAGE 3 --------------------
+    # ---------------------------------------------------
+    # PAGE: Feature Selection & Relevance (Task 3 & 6)
+    # ---------------------------------------------------
     elif page == "Feature Selection & Relevance (Task 3 & 6)":
         st.header("Tasks 3 & 6: Feature Selection / Relevance")
         _, X, y_type, y_level, _, _ = preprocess_for_model(df_raw)
@@ -731,7 +810,6 @@ def main():
 
                 st.write("Top 10 features (Risk_Type):")
                 st.dataframe(importances_rt.head(10))
-
                 fig = plt.figure(figsize=(8, 4))
                 importances_rt.head(10).sort_values().plot(kind="barh")
                 plt.title("Top 10 Feature Importances (Risk_Type)")
@@ -741,7 +819,8 @@ def main():
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - The top-ranked features contribute most strongly to Risk_Type prediction.
+                    - Higher importance indicates a stronger contribution to predicting Risk_Type.
+                    - These can be discussed as key predictors in your thesis results.
                     """
                 )
             else:
@@ -756,7 +835,6 @@ def main():
 
                 st.write("Top 10 features (Risk_Level):")
                 st.dataframe(importances_rl.head(10))
-
                 fig = plt.figure(figsize=(8, 4))
                 importances_rl.head(10).sort_values().plot(kind="barh")
                 plt.title("Top 10 Feature Importances (Risk_Level)")
@@ -766,13 +844,16 @@ def main():
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
-                    - The top-ranked features contribute most strongly to Risk_Level prediction.
+                    - Higher importance indicates stronger contribution to predicting Risk_Level.
+                    - Compare with Risk_Type to identify consistent risk indicators.
                     """
                 )
             else:
                 st.warning("Risk_Level column not found.")
 
-    # -------------------- PAGE 4 --------------------
+    # ---------------------------------------------------
+    # PAGE: Classification Modeling (Tasks 4, 5 & 7)
+    # ---------------------------------------------------
     elif page == "Classification Modeling (Tasks 4, 5 & 7)":
         st.header("Tasks 4, 5 & 7: Classification Modeling")
         _, X, y_type, y_level, _, _ = preprocess_for_model(df_raw)
@@ -784,7 +865,7 @@ def main():
                 st.warning("Risk_Type column not found; cannot train models for Risk-Type.")
             else:
                 st.subheader("Risk-Type Evaluation")
-                subtab_a, subtab_b = st.tabs(["Train/Test Split", "K-Fold Validation"])
+                subtab_a, subtab_b = st.tabs(["Train/Test Split", "Repeated Stratified K-Fold"])
 
                 with subtab_a:
                     _, metrics_rt, split_info_rt, split_note_rt, merge_note_rt = train_models(X, y_type)
@@ -816,35 +897,42 @@ def main():
                     st.markdown(
                         """
                         - This evaluates performance on one held-out test set.
-                        - F1-score (weighted) is emphasized for imbalanced classes.
+                        - F1-score (weighted) is emphasized when the dataset is imbalanced.
                         """
                     )
 
                 with subtab_b:
-                    st.write("K-Fold Cross-Validation (Stratified if possible)")
-                    folds = st.slider("Number of folds (Risk-Type)", 2, 10, 5, 1)
+                    st.write("Repeated Stratified K-Fold Validation (stable for small datasets)")
+                    folds = st.slider("Requested folds (Risk-Type)", 2, 10, 5, 1)
+                    repeats = st.slider("Repeats (Risk-Type)", 2, 30, 10, 1)
 
                     try:
-                        cv_df, effective_folds = kfold_validate_models(X, y_type, n_splits=folds)
+                        cv_df, effective_folds, used_repeats, min_class, limiting_classes = (
+                            repeated_stratified_validate_models(X, y_type, n_splits=folds, n_repeats=repeats)
+                        )
                         st.dataframe(cv_df.style.format("{:.3f}"))
-                        st.info(f"Used {effective_folds} folds based on smallest class size.")
+                        st.info(
+                            f"Requested {folds} folds, but used **{effective_folds}** because the smallest class has "
+                            f"**{min_class}** samples (limiting class/es: {', '.join(map(str, limiting_classes))}). "
+                            f"Repeated **{used_repeats}** times → **{effective_folds * used_repeats} total runs**."
+                        )
 
                         st.markdown("**Interpretation:**")
                         st.markdown(
                             """
-                            - K-Fold validation tests model stability across multiple splits.
-                            - Lower standard deviation means more consistent performance.
+                            - Repeated stratified CV improves reliability when the dataset limits the number of folds.
+                            - The **mean** represents expected performance; the **std** represents stability (lower is better).
                             """
                         )
                     except ValueError as e:
-                        st.warning(f"Could not run K-Fold validation: {e}")
+                        st.warning(f"Could not run repeated stratified validation: {e}")
 
         with tab2:
             if y_level is None:
                 st.warning("Risk_Level column not found; cannot train models for Risk-Level.")
             else:
                 st.subheader("Risk-Level Evaluation")
-                subtab_a, subtab_b = st.tabs(["Train/Test Split", "K-Fold Validation"])
+                subtab_a, subtab_b = st.tabs(["Train/Test Split", "Repeated Stratified K-Fold"])
 
                 with subtab_a:
                     _, metrics_rl, split_info_rl, split_note_rl, merge_note_rl = train_models(X, y_level)
@@ -876,39 +964,48 @@ def main():
                     st.markdown(
                         """
                         - This evaluates performance on one held-out test set.
-                        - F1-score (weighted) is emphasized for imbalanced classes.
+                        - F1-score (weighted) is emphasized when the dataset is imbalanced.
                         """
                     )
 
                 with subtab_b:
-                    st.write("K-Fold Cross-Validation (Stratified if possible)")
-                    folds = st.slider("Number of folds (Risk-Level)", 2, 10, 5, 1)
+                    st.write("Repeated Stratified K-Fold Validation (stable for small datasets)")
+                    folds = st.slider("Requested folds (Risk-Level)", 2, 10, 5, 1)
+                    repeats = st.slider("Repeats (Risk-Level)", 2, 30, 10, 1)
 
                     try:
-                        cv_df, effective_folds = kfold_validate_models(X, y_level, n_splits=folds)
+                        cv_df, effective_folds, used_repeats, min_class, limiting_classes = (
+                            repeated_stratified_validate_models(X, y_level, n_splits=folds, n_repeats=repeats)
+                        )
                         st.dataframe(cv_df.style.format("{:.3f}"))
-                        st.info(f"Used {effective_folds} folds based on smallest class size.")
+                        st.info(
+                            f"Requested {folds} folds, but used **{effective_folds}** because the smallest class has "
+                            f"**{min_class}** samples (limiting class/es: {', '.join(map(str, limiting_classes))}). "
+                            f"Repeated **{used_repeats}** times → **{effective_folds * used_repeats} total runs**."
+                        )
 
                         st.markdown("**Interpretation:**")
                         st.markdown(
                             """
-                            - K-Fold validation tests model stability across multiple splits.
-                            - Lower standard deviation means more consistent performance.
+                            - Repeated stratified CV improves reliability when the dataset limits the number of folds.
+                            - The **mean** represents expected performance; the **std** represents stability (lower is better).
                             """
                         )
                     except ValueError as e:
-                        st.warning(f"Could not run K-Fold validation: {e}")
+                        st.warning(f"Could not run repeated stratified validation: {e}")
 
         st.subheader("Overall Interpretation")
         st.markdown(
             """
             - **Train/Test** gives a single unbiased evaluation on unseen data.
-            - **K-Fold Validation** provides a stability check across multiple splits.
-            - Reporting both strengthens the reliability of results for thesis reporting.
+            - **Repeated Stratified K-Fold** provides a stronger stability check across many repeated splits.
+            - Reporting both strengthens reliability and thesis defensibility.
             """
         )
 
-    # -------------------- PAGE 5 --------------------
+    # ---------------------------------------------------
+    # PAGE: Polymer Type Distribution
+    # ---------------------------------------------------
     elif page == "Polymer Type Distribution":
         st.header("Polymer Type Distribution")
         df = handle_missing_values(df_raw)
@@ -954,7 +1051,9 @@ def main():
         else:
             st.warning("Column 'Polymer_Type' not found in the dataset.")
 
-    # -------------------- PAGE 6 --------------------
+    # ---------------------------------------------------
+    # PAGE: SMOTE & Hyperparameter Tuning (Risk_Type)
+    # ---------------------------------------------------
     elif page == "SMOTE & Hyperparameter Tuning (Risk_Type)":
         st.header("Address Class Imbalance & Tune Logistic Regression (Risk-Type)")
         _, X, y_type, _, _, _ = preprocess_for_model(df_raw)
@@ -1029,6 +1128,14 @@ def main():
                 st.subheader("Comparison: Tuned Logistic Regression vs Base Models")
                 st.dataframe(combined.style.format("{:.3f}"))
                 st.pyplot(plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned)"))
+
+                st.markdown("**Interpretation (Comparison):**")
+                st.markdown(
+                    """
+                    - If tuned model improves recall and F1-score, it indicates better detection of minority classes.
+                    - If improvements are minimal, more data or feature refinement may be required.
+                    """
+                )
             except ValueError:
                 st.warning("Could not generate base-vs-tuned comparison due to limited class sizes.")
 
