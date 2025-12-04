@@ -5,12 +5,19 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import StratifiedKFold, KFold, cross_validate
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 
 from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline as ImbPipeline
+
 from pandas.errors import EmptyDataError, ParserError
 
 # -------------------------------------------------------
@@ -69,7 +76,7 @@ def load_data(uploaded_file=None, path: str = "Microplastic.csv"):
 
 
 # -------------------------------------------------------
-# PREPROCESSING
+# PREPROCESSING (original for EDA-style pages)
 # -------------------------------------------------------
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -254,7 +261,7 @@ def train_models(X, y, test_size=0.2):
     }
 
     models = {
-        "Logistic Regression": LogisticRegression(max_iter=1000, multi_class="auto", n_jobs=-1),
+        "Logistic Regression": LogisticRegression(max_iter=1000, multi_class="auto"),
         "Random Forest": RandomForestClassifier(n_estimators=200, random_state=42),
         "Gradient Boosting": GradientBoostingClassifier(random_state=42),
     }
@@ -322,7 +329,7 @@ def smote_and_tune_logreg(X, y, test_size=0.2):
     param_grid = {"C": [0.01, 0.1, 1, 10], "penalty": ["l2"], "solver": ["lbfgs"]}
 
     grid = GridSearchCV(
-        LogisticRegression(max_iter=1000, multi_class="auto", n_jobs=-1),
+        LogisticRegression(max_iter=1000, multi_class="auto"),
         param_grid=param_grid,
         scoring="f1_weighted",
         cv=5,
@@ -342,6 +349,99 @@ def smote_and_tune_logreg(X, y, test_size=0.2):
     }]).set_index("Model")
 
     return best_lr, tuned_metrics, grid.best_params_, split_info, split_note, merge_note, smote_used
+
+
+# -------------------------------------------------------
+# LEAKAGE-SAFE CV HELPERS (NEW PAGE)
+# -------------------------------------------------------
+def build_preprocess_pipeline(df_raw: pd.DataFrame):
+    numeric_features = [c for c in NUMERIC_COLS if c in df_raw.columns]
+    categorical_features = [c for c in CATEGORICAL_COLS if c in df_raw.columns]
+
+    numeric_pipe = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+    ])
+
+    categorical_pipe = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("onehot", OneHotEncoder(handle_unknown="ignore", drop="first")),
+    ])
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", numeric_pipe, numeric_features),
+            ("cat", categorical_pipe, categorical_features),
+        ],
+        remainder="drop"
+    )
+    return preprocessor
+
+
+def run_cross_validation(df_raw: pd.DataFrame, target_col: str, model_name: str,
+                         n_splits: int = 5, stratified: bool = True, use_smote: bool = False):
+    if target_col not in df_raw.columns:
+        raise ValueError(f"Target column '{target_col}' not found.")
+
+    df = df_raw.dropna(subset=[target_col]).copy()
+    y = df[target_col]
+    X = df.drop(columns=[c for c in [TARGET_RISK_TYPE, TARGET_RISK_LEVEL] if c in df.columns])
+
+    if y.nunique() < 2:
+        raise ValueError("Need at least 2 classes in the target for cross-validation.")
+
+    y = merge_rare_classes(y, min_count=2, other_label="Other")
+
+    models = {
+        "Logistic Regression": LogisticRegression(max_iter=2000, multi_class="auto"),
+        "Random Forest": RandomForestClassifier(n_estimators=300, random_state=42),
+        "Gradient Boosting": GradientBoostingClassifier(random_state=42),
+    }
+    if model_name not in models:
+        raise ValueError("Unknown model selected.")
+    model = models[model_name]
+
+    if stratified:
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    else:
+        cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+    preprocessor = build_preprocess_pipeline(df_raw)
+
+    if use_smote:
+        pipe = ImbPipeline(steps=[
+            ("prep", preprocessor),
+            ("smote", SMOTE(random_state=42)),
+            ("model", model),
+        ])
+    else:
+        pipe = Pipeline(steps=[
+            ("prep", preprocessor),
+            ("model", model),
+        ])
+
+    scoring = {
+        "accuracy": "accuracy",
+        "precision_w": "precision_weighted",
+        "recall_w": "recall_weighted",
+        "f1_w": "f1_weighted",
+    }
+
+    scores = cross_validate(pipe, X, y, cv=cv, scoring=scoring, n_jobs=-1, error_score="raise")
+
+    summary = {}
+    for k in scoring.keys():
+        arr = scores[f"test_{k}"]
+        summary[k] = {"mean": float(np.mean(arr)), "std": float(np.std(arr))}
+    summary_df = pd.DataFrame(summary).T
+    summary_df = summary_df.rename(index={
+        "accuracy": "Accuracy",
+        "precision_w": "Precision (weighted)",
+        "recall_w": "Recall (weighted)",
+        "f1_w": "F1-score (weighted)",
+    })
+
+    return summary_df, scores
 
 
 # -------------------------------------------------------
@@ -371,7 +471,7 @@ def plot_scatter(df, x_col, y_col):
 
     fig, ax = plt.subplots(figsize=(6, 4))
     if mask.sum() == 0:
-        ax.text(0.5, 0.5, f"No numeric data for {x_col} and {y_col}", ha="center", va="center")
+        ax.text(0.5,  0.5, f"No numeric data for {x_col} and {y_col}", ha="center", va="center")
     else:
         ax.scatter(x[mask], y[mask], alpha=0.7)
         ax.set_xlabel(x_col)
@@ -422,13 +522,7 @@ def plot_box_by_category_readable(
     keep = counts.head(top_n).index
     data[category_col] = np.where(data[category_col].isin(keep), data[category_col], other_label)
 
-    order = (
-        data.groupby(category_col)[value_col]
-        .median()
-        .sort_values()
-        .index
-        .tolist()
-    )
+    order = data.groupby(category_col)[value_col].median().sort_values().index.tolist()
 
     if horizontal:
         sns.boxplot(data=data, y=category_col, x=value_col, order=order, ax=ax)
@@ -443,7 +537,6 @@ def plot_box_by_category_readable(
     return fig
 
 
-# ✅ NEW: readable Polymer_Type bar (Top N + Other) + horizontal
 def plot_categorical_topn_bar(
     series: pd.Series,
     title: str,
@@ -451,12 +544,6 @@ def plot_categorical_topn_bar(
     other_label: str = "Other",
     figsize=(10, 6),
 ):
-    """
-    Makes a readable categorical bar plot:
-      - keeps top N categories (by count)
-      - groups the rest into 'Other'
-      - uses a horizontal bar chart (best for long labels)
-    """
     s = series.dropna().astype(str).str.strip()
     s = s.replace({"": np.nan, "nan": np.nan, "None": np.nan}).dropna()
     counts = s.value_counts()
@@ -473,7 +560,6 @@ def plot_categorical_topn_bar(
     if remainder > 0:
         top = pd.concat([top, pd.Series({other_label: remainder})])
 
-    # Plot horizontal for label readability
     fig, ax = plt.subplots(figsize=figsize)
     top.sort_values().plot(kind="barh", ax=ax)
     ax.set_title(title)
@@ -505,6 +591,7 @@ def main():
             "Classification Modeling (Tasks 4, 5 & 7)",
             "Polymer Type Distribution",
             "SMOTE & Hyperparameter Tuning (Risk_Type)",
+            "Cross Validation (K-Fold)",
         ],
     )
 
@@ -700,15 +787,14 @@ def main():
 
                 st.write("Top 10 features (Risk_Type):")
                 st.dataframe(importances_rt.head(10))
-                fig, _ = plot_categorical_topn_bar(importances_rt.head(10), "Top 10 Feature Importances (Risk_Type)", top_n=10)
+                fig = plt.figure(figsize=(8, 4))
+                importances_rt.head(10).sort_values().plot(kind="barh")
+                plt.title("Top 10 Feature Importances (Risk_Type)")
+                plt.tight_layout()
                 st.pyplot(fig)
 
                 st.markdown("**Interpretation:**")
-                st.markdown(
-                    """
-                    - The top-ranked features contribute most strongly to Risk_Type prediction.
-                    """
-                )
+                st.markdown("- The top-ranked features contribute most strongly to Risk_Type prediction.")
             else:
                 st.warning("Risk_Type column not found.")
 
@@ -728,11 +814,7 @@ def main():
                 st.pyplot(fig)
 
                 st.markdown("**Interpretation:**")
-                st.markdown(
-                    """
-                    - The top-ranked features contribute most strongly to Risk_Level prediction.
-                    """
-                )
+                st.markdown("- The top-ranked features contribute most strongly to Risk_Level prediction.")
             else:
                 st.warning("Risk_Level column not found.")
 
@@ -835,10 +917,8 @@ def main():
         df = handle_missing_values(df_raw)
 
         if "Polymer_Type" in df.columns:
-            # Normalize Polymer_Type strings for cleaner grouping
             polymer = df["Polymer_Type"].astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "None": np.nan})
             polymer = polymer.dropna()
-
             vc = polymer.value_counts()
 
             tabA, tabB = st.tabs(["Counts Table", "Readable Plot (Top N + Other)"])
@@ -846,9 +926,9 @@ def main():
             with tabA:
                 st.subheader("Value Counts of Polymer_Type")
                 st.dataframe(vc.rename("count"))
-                st.markdown("**Interpretation:**")
                 st.markdown(
                     """
+                    **Interpretation:**
                     - This table lists each Polymer_Type and its frequency.
                     - Many unique text labels can appear due to inconsistent naming; normalization helps consolidate categories.
                     """
@@ -857,7 +937,7 @@ def main():
             with tabB:
                 st.subheader("Bar Plot of Polymer_Type Distribution (Readable)")
                 top_n = st.slider("Show Top N polymer types", min_value=5, max_value=30, value=15, step=1)
-                fig, full_counts = plot_categorical_topn_bar(
+                fig, _ = plot_categorical_topn_bar(
                     polymer,
                     title=f"Distribution of Polymer_Type (Top {top_n} + Other)",
                     top_n=top_n,
@@ -865,16 +945,13 @@ def main():
                     figsize=(10, 7),
                 )
                 st.pyplot(fig)
-
-                st.markdown("**Interpretation:**")
                 st.markdown(
                     f"""
+                    **Interpretation:**
                     - This plot shows the **Top {top_n} most common** polymer types and groups the remaining types under **'Other'**.
                     - A horizontal bar chart is used so long polymer names remain readable.
-                    - The dominant polymers can indicate the most probable sources of microplastic pollution in the study area.
                     """
                 )
-
         else:
             st.warning("Column 'Polymer_Type' not found in the dataset.")
 
@@ -892,14 +969,6 @@ def main():
         with tab1:
             st.subheader("Class Distribution of Risk-Type (Original)")
             st.write(pd.Series(y_type).value_counts())
-
-            st.markdown("**Interpretation:**")
-            st.markdown(
-                """
-                - If some classes have very few samples, the dataset is imbalanced.
-                - Imbalance can cause models to favor the majority class, lowering recall for minority classes.
-                """
-            )
 
             _, base_metrics_rt, split_info_base_rt, split_note_base, merge_note_base = train_models(X, y_type)
 
@@ -947,23 +1016,79 @@ def main():
             st.subheader("Tuned Logistic Regression Performance")
             st.dataframe(tuned_metrics.style.format("{:.3f}"))
 
-            # Compare base vs tuned
             try:
                 _, base_metrics_compare, _, _, _ = train_models(X, y_type)
                 combined = pd.concat([base_metrics_compare, tuned_metrics])
                 st.subheader("Comparison: Tuned Logistic Regression vs Base Models")
                 st.dataframe(combined.style.format("{:.3f}"))
                 st.pyplot(plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned)"))
-
-                st.markdown("**Interpretation (Comparison):**")
-                st.markdown(
-                    """
-                    - If tuned model improves recall and F1-score, it indicates better detection of minority classes.
-                    - If improvements are minimal, more data or feature refinement may be required.
-                    """
-                )
             except ValueError:
                 st.warning("Could not generate base-vs-tuned comparison due to limited class sizes.")
+
+    # -------------------- PAGE 7 (NEW) --------------------
+    elif page == "Cross Validation (K-Fold)":
+        st.header("Cross Validation (K-Fold / Stratified K-Fold)")
+
+        st.markdown(
+            """
+            This page runs **leakage-safe cross-validation** using a preprocessing **Pipeline**.
+            - For classification, **Stratified K-Fold** is recommended (keeps class balance per fold).
+            - If enabled, **SMOTE is applied inside each fold** (correct way).
+            """
+        )
+
+        target = st.selectbox("Select target", [TARGET_RISK_TYPE, TARGET_RISK_LEVEL])
+        model_name = st.selectbox("Select model", ["Logistic Regression", "Random Forest", "Gradient Boosting"])
+        n_splits = st.slider("Number of folds (k)", min_value=3, max_value=10, value=5, step=1)
+        stratified = st.checkbox("Use Stratified K-Fold (recommended for classification)", value=True)
+
+        use_smote = st.checkbox("Use SMOTE (only if classes are imbalanced)", value=False)
+        if use_smote and target == TARGET_RISK_LEVEL:
+            st.info("SMOTE is usually more relevant for Risk_Type, but you can still try it.")
+
+        st.divider()
+
+        colA, colB = st.columns([1, 2])
+        with colA:
+            st.subheader("Target distribution (after rare-class merge)")
+            if target in df_raw.columns:
+                y_preview = merge_rare_classes(df_raw[target].dropna(), min_count=2, other_label="Other")
+                st.write(y_preview.value_counts())
+            else:
+                st.warning(f"Column '{target}' not found.")
+
+        with colB:
+            st.subheader("Run CV")
+            if st.button("Run Cross-Validation", type="primary"):
+                try:
+                    with st.spinner("Running cross-validation..."):
+                        summary_df, raw_scores = run_cross_validation(
+                            df_raw=df_raw,
+                            target_col=target,
+                            model_name=model_name,
+                            n_splits=n_splits,
+                            stratified=stratified,
+                            use_smote=use_smote,
+                        )
+
+                    st.success("Done!")
+                    st.markdown("### CV Results (mean ± std across folds)")
+                    show = summary_df.copy()
+                    show["mean±std"] = show.apply(lambda r: f"{r['mean']:.3f} ± {r['std']:.3f}", axis=1)
+                    st.dataframe(show[["mean±std"]])
+
+                    with st.expander("Show per-fold scores"):
+                        fold_df = pd.DataFrame({
+                            "Accuracy": raw_scores["test_accuracy"],
+                            "Precision (weighted)": raw_scores["test_precision_w"],
+                            "Recall (weighted)": raw_scores["test_recall_w"],
+                            "F1-score (weighted)": raw_scores["test_f1_w"],
+                        })
+                        fold_df.index = [f"Fold {i+1}" for i in range(len(fold_df))]
+                        st.dataframe(fold_df.style.format("{:.3f}"))
+
+                except Exception as e:
+                    st.error(f"Cross-validation failed: {e}")
 
 
 if __name__ == "__main__":
