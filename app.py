@@ -20,6 +20,7 @@ from imblearn.pipeline import Pipeline as ImbPipeline
 
 from pandas.errors import EmptyDataError, ParserError
 
+
 # -------------------------------------------------------
 # CONFIG
 # -------------------------------------------------------
@@ -46,10 +47,41 @@ CATEGORICAL_COLS = [
 TARGET_RISK_TYPE = "Risk_Type"
 TARGET_RISK_LEVEL = "Risk_Level"
 
+
+# -------------------------------------------------------
+# SPEED CONTROLS (sidebar)
+# -------------------------------------------------------
+def get_perf_settings(mode: str):
+    """
+    Controls defaults that affect runtime.
+    """
+    if mode == "Fast":
+        return {
+            "rf_estimators": 80,
+            "grid_cv": 3,
+            "cv_n_jobs": -1,
+            "hist_kde": False,
+        }
+    if mode == "Accurate":
+        return {
+            "rf_estimators": 300,
+            "grid_cv": 5,
+            "cv_n_jobs": -1,
+            "hist_kde": True,
+        }
+    # Balanced
+    return {
+        "rf_estimators": 150,
+        "grid_cv": 4,
+        "cv_n_jobs": -1,
+        "hist_kde": True,
+    }
+
+
 # -------------------------------------------------------
 # DATA LOADING
 # -------------------------------------------------------
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def load_data(uploaded_file=None, path: str = "Microplastic.csv"):
     """
     Load CSV from uploaded file or local path.
@@ -143,6 +175,14 @@ def scale_numeric(df: pd.DataFrame, cols):
     return df, scaler
 
 
+@st.cache_data(show_spinner=False)
+def preprocess_for_model_cached(df_raw: pd.DataFrame):
+    """
+    Cached wrapper around preprocess_for_model to avoid repeating heavy work on reruns + page changes.
+    """
+    return preprocess_for_model(df_raw)
+
+
 def preprocess_for_model(df: pd.DataFrame):
     df = df.copy()
 
@@ -224,7 +264,7 @@ def safe_train_test_split(X, y, test_size=0.2, random_state=42):
 # -------------------------------------------------------
 # MODELING
 # -------------------------------------------------------
-def train_models(X, y, test_size=0.2):
+def train_models(X, y, test_size=0.2, rf_estimators: int = 200):
     y = pd.Series(y)
     mask = y.notna()
     X = X.loc[mask]
@@ -262,7 +302,7 @@ def train_models(X, y, test_size=0.2):
 
     models = {
         "Logistic Regression": LogisticRegression(max_iter=1000, multi_class="auto"),
-        "Random Forest": RandomForestClassifier(n_estimators=200, random_state=42),
+        "Random Forest": RandomForestClassifier(n_estimators=rf_estimators, random_state=42),
         "Gradient Boosting": GradientBoostingClassifier(random_state=42),
     }
 
@@ -282,7 +322,7 @@ def train_models(X, y, test_size=0.2):
     return models, metrics_df, split_info, split_note, merge_note
 
 
-def smote_and_tune_logreg(X, y, test_size=0.2):
+def smote_and_tune_logreg(X, y, test_size=0.2, grid_cv: int = 5):
     y = pd.Series(y)
     mask = y.notna()
     X = X.loc[mask]
@@ -332,7 +372,7 @@ def smote_and_tune_logreg(X, y, test_size=0.2):
         LogisticRegression(max_iter=1000, multi_class="auto"),
         param_grid=param_grid,
         scoring="f1_weighted",
-        cv=5,
+        cv=grid_cv,
         n_jobs=-1,
     )
     grid.fit(X_res, y_res)
@@ -354,9 +394,12 @@ def smote_and_tune_logreg(X, y, test_size=0.2):
 # -------------------------------------------------------
 # LEAKAGE-SAFE CV HELPERS (NEW PAGE)
 # -------------------------------------------------------
-def build_preprocess_pipeline(df_raw: pd.DataFrame):
-    numeric_features = [c for c in NUMERIC_COLS if c in df_raw.columns]
-    categorical_features = [c for c in CATEGORICAL_COLS if c in df_raw.columns]
+@st.cache_data(show_spinner=False)
+def build_preprocess_pipeline_cached(columns_signature: tuple):
+    """
+    Cache ColumnTransformer creation by column signature so it doesn't rebuild on every rerun.
+    """
+    numeric_features, categorical_features = columns_signature
 
     numeric_pipe = Pipeline(steps=[
         ("imputer", SimpleImputer(strategy="median")),
@@ -370,8 +413,8 @@ def build_preprocess_pipeline(df_raw: pd.DataFrame):
 
     preprocessor = ColumnTransformer(
         transformers=[
-            ("num", numeric_pipe, numeric_features),
-            ("cat", categorical_pipe, categorical_features),
+            ("num", numeric_pipe, list(numeric_features)),
+            ("cat", categorical_pipe, list(categorical_features)),
         ],
         remainder="drop"
     )
@@ -379,7 +422,8 @@ def build_preprocess_pipeline(df_raw: pd.DataFrame):
 
 
 def run_cross_validation(df_raw: pd.DataFrame, target_col: str, model_name: str,
-                         n_splits: int = 5, stratified: bool = True, use_smote: bool = False):
+                         n_splits: int = 5, stratified: bool = True, use_smote: bool = False,
+                         rf_estimators: int = 300, n_jobs: int = -1):
     if target_col not in df_raw.columns:
         raise ValueError(f"Target column '{target_col}' not found.")
 
@@ -394,7 +438,7 @@ def run_cross_validation(df_raw: pd.DataFrame, target_col: str, model_name: str,
 
     models = {
         "Logistic Regression": LogisticRegression(max_iter=2000, multi_class="auto"),
-        "Random Forest": RandomForestClassifier(n_estimators=300, random_state=42),
+        "Random Forest": RandomForestClassifier(n_estimators=rf_estimators, random_state=42),
         "Gradient Boosting": GradientBoostingClassifier(random_state=42),
     }
     if model_name not in models:
@@ -406,7 +450,9 @@ def run_cross_validation(df_raw: pd.DataFrame, target_col: str, model_name: str,
     else:
         cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
-    preprocessor = build_preprocess_pipeline(df_raw)
+    num_feats = tuple([c for c in NUMERIC_COLS if c in df_raw.columns])
+    cat_feats = tuple([c for c in CATEGORICAL_COLS if c in df_raw.columns])
+    preprocessor = build_preprocess_pipeline_cached((num_feats, cat_feats))
 
     if use_smote:
         pipe = ImbPipeline(steps=[
@@ -427,14 +473,13 @@ def run_cross_validation(df_raw: pd.DataFrame, target_col: str, model_name: str,
         "f1_w": "f1_weighted",
     }
 
-    scores = cross_validate(pipe, X, y, cv=cv, scoring=scoring, n_jobs=-1, error_score="raise")
+    scores = cross_validate(pipe, X, y, cv=cv, scoring=scoring, n_jobs=n_jobs, error_score="raise")
 
     summary = {}
     for k in scoring.keys():
         arr = scores[f"test_{k}"]
         summary[k] = {"mean": float(np.mean(arr)), "std": float(np.std(arr))}
-    summary_df = pd.DataFrame(summary).T
-    summary_df = summary_df.rename(index={
+    summary_df = pd.DataFrame(summary).T.rename(index={
         "accuracy": "Accuracy",
         "precision_w": "Precision (weighted)",
         "recall_w": "Recall (weighted)",
@@ -447,7 +492,7 @@ def run_cross_validation(df_raw: pd.DataFrame, target_col: str, model_name: str,
 # -------------------------------------------------------
 # VISUALS
 # -------------------------------------------------------
-def plot_hist_box(df, col):
+def plot_hist_box(df, col, kde=True):
     s = pd.to_numeric(df[col], errors="coerce").dropna()
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
@@ -455,7 +500,7 @@ def plot_hist_box(df, col):
         axes[0].text(0.5, 0.5, f"No numeric data for {col}", ha="center", va="center")
         axes[1].text(0.5, 0.5, f"No numeric data for {col}", ha="center", va="center")
     else:
-        sns.histplot(s, kde=True, ax=axes[0])
+        sns.histplot(s, kde=kde, ax=axes[0])
         axes[0].set_title(f"Histogram of {col}")
         sns.boxplot(x=s, ax=axes[1])
         axes[1].set_title(f"Boxplot of {col}")
@@ -572,7 +617,23 @@ def plot_categorical_topn_bar(
 # -------------------------------------------------------
 # APP
 # -------------------------------------------------------
+def init_session():
+    defaults = {
+        "rt_models_results": None,
+        "rl_models_results": None,
+        "rt_featimp": None,
+        "rl_featimp": None,
+        "smote_results": None,
+        "cv_results": None,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
 def main():
+    init_session()
+
     st.title("Microplastic Risk Prediction – Streamlit App")
     st.markdown(
         """
@@ -581,6 +642,11 @@ def main():
         """
     )
 
+    st.sidebar.header("Performance")
+    perf_mode = st.sidebar.selectbox("Performance mode", ["Fast", "Balanced", "Accurate"], index=1)
+    perf = get_perf_settings(perf_mode)
+
+    st.sidebar.divider()
     st.sidebar.header("Navigation")
     page = st.sidebar.radio(
         "Go to",
@@ -620,6 +686,9 @@ def main():
         st.error("❌ No dataset found. Upload a CSV or add 'Microplastic.csv' beside app.py.")
         st.stop()
 
+    # Preprocess ONCE per run via cache (fast navigation across pages)
+    df_clean, X, y_type, y_level, skewness, skewed_cols = preprocess_for_model_cached(df_raw)
+
     # -------------------- PAGE 1 --------------------
     if page == "Data Overview & Task 1":
         st.header("Data Overview & Task 1: Risk_Score Analysis")
@@ -635,25 +704,11 @@ def main():
             st.subheader("Raw Dataset (first 10 rows)")
             st.dataframe(df_raw.head(10))
             st.markdown(f"**Shape:** `{df_raw.shape[0]}` rows × `{df_raw.shape[1]}` columns")
-            st.markdown("**Interpretation:**")
-            st.markdown(
-                """
-                - This section verifies that the dataset is loaded successfully.
-                - The first few rows help confirm that the expected columns are present and values look reasonable.
-                """
-            )
 
         with tab2:
             if "Risk_Score" in df_raw.columns:
                 st.subheader("Distribution of Risk_Score (Histogram & Boxplot)")
-                st.pyplot(plot_hist_box(df_raw, "Risk_Score"))
-                st.markdown("**Interpretation:**")
-                st.markdown(
-                    """
-                    - The histogram shows frequency of Risk_Score values.
-                    - The boxplot summarizes dispersion and flags potential outliers.
-                    """
-                )
+                st.pyplot(plot_hist_box(df_raw, "Risk_Score", kde=perf["hist_kde"]))
             else:
                 st.info("Column 'Risk_Score' not found in the dataset.")
 
@@ -661,13 +716,6 @@ def main():
             if "MP_Count_per_L" in df_raw.columns and "Risk_Score" in df_raw.columns:
                 st.subheader("Relationship between Risk_Score and MP_Count_per_L")
                 st.pyplot(plot_scatter(df_raw, "MP_Count_per_L", "Risk_Score"))
-                st.markdown("**Interpretation:**")
-                st.markdown(
-                    """
-                    - If an upward trend exists, higher microplastic concentration tends to correspond to higher risk.
-                    - If scattered, other variables likely contribute to risk.
-                    """
-                )
             else:
                 st.info("Columns 'MP_Count_per_L' and/or 'Risk_Score' not found.")
 
@@ -684,20 +732,12 @@ def main():
                         horizontal=True,
                     )
                 )
-                st.markdown("**Interpretation:**")
-                st.markdown(
-                    """
-                    - This compares Risk_Score distributions across Risk_Level categories.
-                    - Overlap suggests borderline samples or thresholds that may require refinement.
-                    """
-                )
             else:
                 st.info("Columns 'Risk_Level' and/or 'Risk_Score' not found.")
 
     # -------------------- PAGE 2 --------------------
     elif page == "Preprocessing (Task 2)":
         st.header("Task 2: Preprocessing")
-        df_clean, X, y_type, y_level, skewness, skewed_cols = preprocess_for_model(df_raw)
 
         tab1, tab2, tab3, tab4 = st.tabs([
             "Before Preprocessing",
@@ -711,13 +751,6 @@ def main():
             if numeric_present:
                 st.subheader("Before Preprocessing – Descriptive Stats")
                 st.write(df_raw[numeric_present].describe())
-                st.markdown("**Interpretation:**")
-                st.markdown(
-                    """
-                    - Baseline statistics before cleaning.
-                    - Large ranges and extreme maxima suggest outliers and skewness.
-                    """
-                )
             else:
                 st.info("No numeric columns found for descriptive stats.")
 
@@ -726,102 +759,72 @@ def main():
             if numeric_present_clean:
                 st.subheader("After Preprocessing – Descriptive Stats")
                 st.write(df_clean[numeric_present_clean].describe())
-                st.markdown("**Interpretation:**")
-                st.markdown(
-                    """
-                    - Outlier capping and transformations stabilize numeric distributions.
-                    - Scaling improves comparability across features.
-                    """
-                )
             else:
                 st.info("No cleaned numeric columns found.")
 
         with tab3:
             st.subheader("Skewness (Before Transform)")
             st.write(skewness)
+            st.write("Skewed columns transformed (log1p):" if len(skewed_cols) > 0 else "No columns exceeded skewness threshold.")
             if len(skewed_cols) > 0:
-                st.write("Skewed columns transformed (log1p):")
                 st.write(skewed_cols)
-            else:
-                st.write("No columns exceeded skewness threshold.")
-            st.markdown("**Interpretation:**")
-            st.markdown(
-                """
-                - Skewness measures distribution asymmetry.
-                - Log-transform helps reduce long tails and improve stability.
-                """
-            )
 
         with tab4:
             st.subheader("Encoded Feature Matrix (X) – First 10 Rows")
             st.dataframe(X.head(10))
             st.write("Shape of X:", X.shape)
-            st.markdown("**Interpretation:**")
-            st.markdown(
-                """
-                - Categorical variables are converted into numeric features (one-hot encoding).
-                - The feature matrix is ready for machine learning.
-                """
-            )
 
     # -------------------- PAGE 3 --------------------
     elif page == "Feature Selection & Relevance (Task 3 & 6)":
         st.header("Tasks 3 & 6: Feature Selection / Relevance")
-        _, X, y_type, y_level, _, _ = preprocess_for_model(df_raw)
-
-        st.markdown(
-            """
-            A **Random Forest** model estimates feature importance.
-            Higher importance indicates stronger contribution to prediction.
-            """
-        )
 
         tab_rt, tab_rl = st.tabs(["Risk_Type Feature Importance", "Risk_Level Feature Importance"])
 
         with tab_rt:
-            if y_type is not None:
-                st.subheader("Random Forest Feature Importance – Risk_Type")
-                rf_rt = RandomForestClassifier(n_estimators=200, random_state=42)
-                rf_rt.fit(X, y_type)
-                importances_rt = pd.Series(rf_rt.feature_importances_, index=X.columns).sort_values(ascending=False)
-
-                st.write("Top 10 features (Risk_Type):")
-                st.dataframe(importances_rt.head(10))
-                fig = plt.figure(figsize=(8, 4))
-                importances_rt.head(10).sort_values().plot(kind="barh")
-                plt.title("Top 10 Feature Importances (Risk_Type)")
-                plt.tight_layout()
-                st.pyplot(fig)
-
-                st.markdown("**Interpretation:**")
-                st.markdown("- The top-ranked features contribute most strongly to Risk_Type prediction.")
-            else:
+            if y_type is None:
                 st.warning("Risk_Type column not found.")
+            else:
+                if st.button("Compute Feature Importance (Risk_Type)"):
+                    rf = RandomForestClassifier(n_estimators=perf["rf_estimators"], random_state=42)
+                    rf.fit(X, y_type)
+                    imp = pd.Series(rf.feature_importances_, index=X.columns).sort_values(ascending=False)
+                    st.session_state.rt_featimp = imp
+
+                if st.session_state.rt_featimp is not None:
+                    imp = st.session_state.rt_featimp
+                    st.dataframe(imp.head(10))
+                    fig = plt.figure(figsize=(8, 4))
+                    imp.head(10).sort_values().plot(kind="barh")
+                    plt.title("Top 10 Feature Importances (Risk_Type)")
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                else:
+                    st.info("Click the button to compute feature importance (cached in session).")
 
         with tab_rl:
-            if y_level is not None:
-                st.subheader("Random Forest Feature Importance – Risk_Level")
-                rf_rl = RandomForestClassifier(n_estimators=200, random_state=42)
-                rf_rl.fit(X, y_level)
-                importances_rl = pd.Series(rf_rl.feature_importances_, index=X.columns).sort_values(ascending=False)
-
-                st.write("Top 10 features (Risk_Level):")
-                st.dataframe(importances_rl.head(10))
-                fig = plt.figure(figsize=(8, 4))
-                importances_rl.head(10).sort_values().plot(kind="barh")
-                plt.title("Top 10 Feature Importances (Risk_Level)")
-                plt.tight_layout()
-                st.pyplot(fig)
-
-                st.markdown("**Interpretation:**")
-                st.markdown("- The top-ranked features contribute most strongly to Risk_Level prediction.")
-            else:
+            if y_level is None:
                 st.warning("Risk_Level column not found.")
+            else:
+                if st.button("Compute Feature Importance (Risk_Level)"):
+                    rf = RandomForestClassifier(n_estimators=perf["rf_estimators"], random_state=42)
+                    rf.fit(X, y_level)
+                    imp = pd.Series(rf.feature_importances_, index=X.columns).sort_values(ascending=False)
+                    st.session_state.rl_featimp = imp
+
+                if st.session_state.rl_featimp is not None:
+                    imp = st.session_state.rl_featimp
+                    st.dataframe(imp.head(10))
+                    fig = plt.figure(figsize=(8, 4))
+                    imp.head(10).sort_values().plot(kind="barh")
+                    plt.title("Top 10 Feature Importances (Risk_Level)")
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                else:
+                    st.info("Click the button to compute feature importance (cached in session).")
 
     # -------------------- PAGE 4 --------------------
     elif page == "Classification Modeling (Tasks 4, 5 & 7)":
         st.header("Tasks 4, 5 & 7: Classification Modeling")
-        _, X, y_type, y_level, _, _ = preprocess_for_model(df_raw)
 
         tab1, tab2 = st.tabs(["Risk-Type Models", "Risk-Level Models"])
 
@@ -829,113 +832,73 @@ def main():
             if y_type is None:
                 st.warning("Risk_Type column not found; cannot train models for Risk-Type.")
             else:
-                st.subheader("Models for Risk-Type")
-                _, metrics_rt, split_info_rt, split_note_rt, merge_note_rt = train_models(X, y_type)
+                if st.button("Run Risk-Type Models"):
+                    st.session_state.rt_models_results = train_models(X, y_type, rf_estimators=perf["rf_estimators"])
 
-                st.write("Performance Metrics – Risk-Type")
-                st.dataframe(metrics_rt.style.format("{:.3f}"))
-                st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type)"))
-                st.info(split_note_rt)
+                if st.session_state.rt_models_results is not None:
+                    _, metrics_rt, split_info_rt, split_note_rt, merge_note_rt = st.session_state.rt_models_results
 
-                if merge_note_rt is not None:
-                    with st.expander("Rare-class merging details (small classes → 'Other')"):
-                        st.write("Before:")
-                        st.write(merge_note_rt["before"])
-                        st.write("After:")
-                        st.write(merge_note_rt["after"])
+                    st.dataframe(metrics_rt.style.format("{:.3f}"))
+                    st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type)"))
+                    st.info(split_note_rt)
 
-                st.markdown("**Train–Test Split (Risk-Type):**")
-                st.markdown(
-                    f"""
-                    - Training set shape: `{split_info_rt['X_train_shape']}`  
-                    - Test set shape: `{split_info_rt['X_test_shape']}`
-                    """
-                )
-                st.write("Class distribution in **training set**:")
-                st.write(split_info_rt["y_train_counts"])
-                st.write("Class distribution in **test set**:")
-                st.write(split_info_rt["y_test_counts"])
+                    if merge_note_rt is not None:
+                        with st.expander("Rare-class merging details (small classes → 'Other')"):
+                            st.write("Before:")
+                            st.write(merge_note_rt["before"])
+                            st.write("After:")
+                            st.write(merge_note_rt["after"])
 
-                st.markdown("**Interpretation:**")
-                st.markdown(
-                    """
-                    - Compare models using F1-score when classes are imbalanced.
-                    - Stratified split preserves proportions; rare-class merging improves stability.
-                    """
-                )
+                    st.write("Train counts:")
+                    st.write(split_info_rt["y_train_counts"])
+                    st.write("Test counts:")
+                    st.write(split_info_rt["y_test_counts"])
+                else:
+                    st.info("Click 'Run Risk-Type Models' to compute metrics (cached in session).")
 
         with tab2:
             if y_level is None:
                 st.warning("Risk_Level column not found; cannot train models for Risk-Level.")
             else:
-                st.subheader("Models for Risk-Level")
-                _, metrics_rl, split_info_rl, split_note_rl, merge_note_rl = train_models(X, y_level)
+                if st.button("Run Risk-Level Models"):
+                    st.session_state.rl_models_results = train_models(X, y_level, rf_estimators=perf["rf_estimators"])
 
-                st.write("Performance Metrics – Risk-Level")
-                st.dataframe(metrics_rl.style.format("{:.3f}"))
-                st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level)"))
-                st.info(split_note_rl)
+                if st.session_state.rl_models_results is not None:
+                    _, metrics_rl, split_info_rl, split_note_rl, merge_note_rl = st.session_state.rl_models_results
 
-                if merge_note_rl is not None:
-                    with st.expander("Rare-class merging details (small classes → 'Other')"):
-                        st.write("Before:")
-                        st.write(merge_note_rl["before"])
-                        st.write("After:")
-                        st.write(merge_note_rl["after"])
+                    st.dataframe(metrics_rl.style.format("{:.3f}"))
+                    st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level)"))
+                    st.info(split_note_rl)
 
-                st.markdown("**Train–Test Split (Risk-Level):**")
-                st.markdown(
-                    f"""
-                    - Training set shape: `{split_info_rl['X_train_shape']}`  
-                    - Test set shape: `{split_info_rl['X_test_shape']}`
-                    """
-                )
-                st.write("Class distribution in **training set**:")
-                st.write(split_info_rl["y_train_counts"])
-                st.write("Class distribution in **test set**:")
-                st.write(split_info_rl["y_test_counts"])
+                    if merge_note_rl is not None:
+                        with st.expander("Rare-class merging details (small classes → 'Other')"):
+                            st.write("Before:")
+                            st.write(merge_note_rl["before"])
+                            st.write("After:")
+                            st.write(merge_note_rl["after"])
 
-                st.markdown("**Interpretation:**")
-                st.markdown(
-                    """
-                    - Metrics evaluate the ability to classify Risk_Level categories.
-                    - Small classes may be merged into 'Other' to enable stable splitting.
-                    """
-                )
-
-        st.subheader("Overall Interpretation")
-        st.markdown(
-            """
-            - Evaluation quality depends on whether each class appears in both train and test sets.
-            - The app automatically attempts stratification and stabilizes evaluation using rare-class merging.
-            """
-        )
+                    st.write("Train counts:")
+                    st.write(split_info_rl["y_train_counts"])
+                    st.write("Test counts:")
+                    st.write(split_info_rl["y_test_counts"])
+                else:
+                    st.info("Click 'Run Risk-Level Models' to compute metrics (cached in session).")
 
     # -------------------- PAGE 5 --------------------
     elif page == "Polymer Type Distribution":
         st.header("Polymer Type Distribution")
-        df = handle_missing_values(df_raw)
 
-        if "Polymer_Type" in df.columns:
-            polymer = df["Polymer_Type"].astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "None": np.nan})
+        if "Polymer_Type" in df_raw.columns:
+            polymer = df_raw["Polymer_Type"].astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "None": np.nan})
             polymer = polymer.dropna()
             vc = polymer.value_counts()
 
             tabA, tabB = st.tabs(["Counts Table", "Readable Plot (Top N + Other)"])
 
             with tabA:
-                st.subheader("Value Counts of Polymer_Type")
                 st.dataframe(vc.rename("count"))
-                st.markdown(
-                    """
-                    **Interpretation:**
-                    - This table lists each Polymer_Type and its frequency.
-                    - Many unique text labels can appear due to inconsistent naming; normalization helps consolidate categories.
-                    """
-                )
 
             with tabB:
-                st.subheader("Bar Plot of Polymer_Type Distribution (Readable)")
                 top_n = st.slider("Show Top N polymer types", min_value=5, max_value=30, value=15, step=1)
                 fig, _ = plot_categorical_topn_bar(
                     polymer,
@@ -945,20 +908,12 @@ def main():
                     figsize=(10, 7),
                 )
                 st.pyplot(fig)
-                st.markdown(
-                    f"""
-                    **Interpretation:**
-                    - This plot shows the **Top {top_n} most common** polymer types and groups the remaining types under **'Other'**.
-                    - A horizontal bar chart is used so long polymer names remain readable.
-                    """
-                )
         else:
             st.warning("Column 'Polymer_Type' not found in the dataset.")
 
     # -------------------- PAGE 6 --------------------
     elif page == "SMOTE & Hyperparameter Tuning (Risk_Type)":
         st.header("Address Class Imbalance & Tune Logistic Regression (Risk-Type)")
-        _, X, y_type, _, _, _ = preprocess_for_model(df_raw)
 
         if y_type is None:
             st.warning("Risk_Type column not found; cannot run SMOTE or tuning.")
@@ -970,62 +925,72 @@ def main():
             st.subheader("Class Distribution of Risk-Type (Original)")
             st.write(pd.Series(y_type).value_counts())
 
-            _, base_metrics_rt, split_info_base_rt, split_note_base, merge_note_base = train_models(X, y_type)
+            if st.button("Run Base Models (Risk-Type)"):
+                st.session_state.rt_models_results = train_models(X, y_type, rf_estimators=perf["rf_estimators"])
 
-            st.subheader("Base Models Performance (Risk-Type)")
-            st.dataframe(base_metrics_rt.style.format("{:.3f}"))
-            st.pyplot(plot_metrics_bar(base_metrics_rt, "(Risk-Type – Base)"))
-            st.info(split_note_base)
+            if st.session_state.rt_models_results is not None:
+                _, base_metrics_rt, split_info_base_rt, split_note_base, merge_note_base = st.session_state.rt_models_results
+                st.dataframe(base_metrics_rt.style.format("{:.3f}"))
+                st.pyplot(plot_metrics_bar(base_metrics_rt, "(Risk-Type – Base)"))
+                st.info(split_note_base)
 
-            if merge_note_base is not None:
-                with st.expander("Rare-class merging details (small classes → 'Other')"):
-                    st.write("Before:")
-                    st.write(merge_note_base["before"])
-                    st.write("After:")
-                    st.write(merge_note_base["after"])
+                if merge_note_base is not None:
+                    with st.expander("Rare-class merging details (small classes → 'Other')"):
+                        st.write("Before:")
+                        st.write(merge_note_base["before"])
+                        st.write("After:")
+                        st.write(merge_note_base["after"])
 
-            st.markdown("**Train–Test Split (Base):**")
-            st.markdown(
-                f"""
-                - Training set shape: `{split_info_base_rt['X_train_shape']}`  
-                - Test set shape: `{split_info_base_rt['X_test_shape']}`
-                """
-            )
+                st.write("Train counts:")
+                st.write(split_info_base_rt["y_train_counts"])
+                st.write("Test counts:")
+                st.write(split_info_base_rt["y_test_counts"])
+            else:
+                st.info("Click 'Run Base Models (Risk-Type)' to compute metrics.")
 
         with tab2:
             st.subheader("SMOTE + Hyperparameter Tuning")
-            with st.spinner("Running SMOTE + GridSearchCV..."):
+
+            if st.button("Run SMOTE + GridSearchCV (Risk-Type)", type="primary"):
+                with st.spinner("Running SMOTE + GridSearchCV..."):
+                    st.session_state.smote_results = smote_and_tune_logreg(X, y_type, grid_cv=perf["grid_cv"])
+
+            if st.session_state.smote_results is not None:
                 best_lr, tuned_metrics, best_params, split_info_smote, split_note_smote, merge_note_smote, smote_used = (
-                    smote_and_tune_logreg(X, y_type)
+                    st.session_state.smote_results
                 )
 
-            st.write("Best Hyperparameters (Logistic Regression):")
-            st.json(best_params)
-            st.info(split_note_smote)
+                st.json(best_params)
+                st.info(split_note_smote)
 
-            if not smote_used:
-                st.warning("SMOTE could not be applied due to very small minority classes; tuning continued without SMOTE.")
+                if not smote_used:
+                    st.warning("SMOTE could not be applied due to very small minority classes; tuning continued without SMOTE.")
 
-            if merge_note_smote is not None:
-                with st.expander("Rare-class merging details (small classes → 'Other')"):
-                    st.write("Before:")
-                    st.write(merge_note_smote["before"])
-                    st.write("After:")
-                    st.write(merge_note_smote["after"])
+                if merge_note_smote is not None:
+                    with st.expander("Rare-class merging details (small classes → 'Other')"):
+                        st.write("Before:")
+                        st.write(merge_note_smote["before"])
+                        st.write("After:")
+                        st.write(merge_note_smote["after"])
 
-            st.subheader("Tuned Logistic Regression Performance")
-            st.dataframe(tuned_metrics.style.format("{:.3f}"))
+                st.dataframe(tuned_metrics.style.format("{:.3f}"))
 
-            try:
-                _, base_metrics_compare, _, _, _ = train_models(X, y_type)
-                combined = pd.concat([base_metrics_compare, tuned_metrics])
-                st.subheader("Comparison: Tuned Logistic Regression vs Base Models")
-                st.dataframe(combined.style.format("{:.3f}"))
-                st.pyplot(plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned)"))
-            except ValueError:
-                st.warning("Could not generate base-vs-tuned comparison due to limited class sizes.")
+                # Compare with base (only if base exists; else compute quickly)
+                try:
+                    if st.session_state.rt_models_results is None:
+                        st.session_state.rt_models_results = train_models(X, y_type, rf_estimators=perf["rf_estimators"])
+                    _, base_metrics_compare, _, _, _ = st.session_state.rt_models_results
 
-    # -------------------- PAGE 7 (NEW) --------------------
+                    combined = pd.concat([base_metrics_compare, tuned_metrics])
+                    st.subheader("Comparison: Tuned Logistic Regression vs Base Models")
+                    st.dataframe(combined.style.format("{:.3f}"))
+                    st.pyplot(plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned)"))
+                except ValueError:
+                    st.warning("Could not generate base-vs-tuned comparison due to limited class sizes.")
+            else:
+                st.info("Click 'Run SMOTE + GridSearchCV (Risk-Type)' to compute tuned model results.")
+
+    # -------------------- PAGE 7 --------------------
     elif page == "Cross Validation (K-Fold)":
         st.header("Cross Validation (K-Fold / Stratified K-Fold)")
 
@@ -1041,10 +1006,7 @@ def main():
         model_name = st.selectbox("Select model", ["Logistic Regression", "Random Forest", "Gradient Boosting"])
         n_splits = st.slider("Number of folds (k)", min_value=3, max_value=10, value=5, step=1)
         stratified = st.checkbox("Use Stratified K-Fold (recommended for classification)", value=True)
-
         use_smote = st.checkbox("Use SMOTE (only if classes are imbalanced)", value=False)
-        if use_smote and target == TARGET_RISK_LEVEL:
-            st.info("SMOTE is usually more relevant for Risk_Type, but you can still try it.")
 
         st.divider()
 
@@ -1060,7 +1022,11 @@ def main():
         with colB:
             st.subheader("Run CV")
             if st.button("Run Cross-Validation", type="primary"):
-                try:
+                # Cache key to avoid rerunning if user toggles something small
+                cache_key = (target, model_name, n_splits, stratified, use_smote, perf["rf_estimators"], perf["cv_n_jobs"])
+                if st.session_state.cv_results is not None and st.session_state.cv_results.get("key") == cache_key:
+                    st.info("Using cached CV result from this session.")
+                else:
                     with st.spinner("Running cross-validation..."):
                         summary_df, raw_scores = run_cross_validation(
                             df_raw=df_raw,
@@ -1069,26 +1035,28 @@ def main():
                             n_splits=n_splits,
                             stratified=stratified,
                             use_smote=use_smote,
+                            rf_estimators=max(perf["rf_estimators"], 150),
+                            n_jobs=perf["cv_n_jobs"],
                         )
+                    st.session_state.cv_results = {"key": cache_key, "summary": summary_df, "raw": raw_scores}
 
-                    st.success("Done!")
-                    st.markdown("### CV Results (mean ± std across folds)")
-                    show = summary_df.copy()
-                    show["mean±std"] = show.apply(lambda r: f"{r['mean']:.3f} ± {r['std']:.3f}", axis=1)
-                    st.dataframe(show[["mean±std"]])
+                summary_df = st.session_state.cv_results["summary"]
+                raw_scores = st.session_state.cv_results["raw"]
 
-                    with st.expander("Show per-fold scores"):
-                        fold_df = pd.DataFrame({
-                            "Accuracy": raw_scores["test_accuracy"],
-                            "Precision (weighted)": raw_scores["test_precision_w"],
-                            "Recall (weighted)": raw_scores["test_recall_w"],
-                            "F1-score (weighted)": raw_scores["test_f1_w"],
-                        })
-                        fold_df.index = [f"Fold {i+1}" for i in range(len(fold_df))]
-                        st.dataframe(fold_df.style.format("{:.3f}"))
+                st.success("Done!")
+                show = summary_df.copy()
+                show["mean±std"] = show.apply(lambda r: f"{r['mean']:.3f} ± {r['std']:.3f}", axis=1)
+                st.dataframe(show[["mean±std"]])
 
-                except Exception as e:
-                    st.error(f"Cross-validation failed: {e}")
+                with st.expander("Show per-fold scores"):
+                    fold_df = pd.DataFrame({
+                        "Accuracy": raw_scores["test_accuracy"],
+                        "Precision (weighted)": raw_scores["test_precision_w"],
+                        "Recall (weighted)": raw_scores["test_recall_w"],
+                        "F1-score (weighted)": raw_scores["test_f1_w"],
+                    })
+                    fold_df.index = [f"Fold {i+1}" for i in range(len(fold_df))]
+                    st.dataframe(fold_df.style.format("{:.3f}"))
 
 
 if __name__ == "__main__":
