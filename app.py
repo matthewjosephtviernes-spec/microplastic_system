@@ -18,9 +18,9 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from imblearn.over_sampling import SMOTE
 from pandas.errors import EmptyDataError, ParserError
 
-# -------------------------------------------------------
-# CONFIG
-# -------------------------------------------------------
+# =======================================================
+# STREAMLIT CONFIG
+# =======================================================
 st.set_page_config(page_title="Microplastic Risk Analysis", layout="wide")
 
 NUMERIC_COLS = [
@@ -44,13 +44,13 @@ CATEGORICAL_COLS = [
 TARGET_RISK_TYPE = "Risk_Type"
 TARGET_RISK_LEVEL = "Risk_Level"
 
-# -------------------------------------------------------
-# DATA LOADING (CLOUD-STABLE)
-# -------------------------------------------------------
-@st.cache_data
+# =======================================================
+# DATA LOADING (CLOUD-FRIENDLY)
+# =======================================================
+@st.cache_data(show_spinner=False)
 def load_data(uploaded_file=None, path: str = "Microplastic.csv"):
     src = uploaded_file if uploaded_file is not None else path
-    encodings_to_try = ["latin1", "utf-8", "cp1252", "utf-8-sig"]
+    encodings_to_try = ["utf-8", "utf-8-sig", "latin1", "cp1252"]
 
     last_err = None
     for enc in encodings_to_try:
@@ -72,21 +72,24 @@ def load_data(uploaded_file=None, path: str = "Microplastic.csv"):
     return None
 
 
-# -------------------------------------------------------
+# =======================================================
 # PREPROCESSING
-# -------------------------------------------------------
+# =======================================================
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
+    # numeric: force numeric then median
     for col in NUMERIC_COLS:
         if col in df.columns:
             s = pd.to_numeric(df[col], errors="coerce")
             df[col] = 0.0 if s.notna().sum() == 0 else s.fillna(s.median())
 
+    # categorical: mode or "Unknown"
     for col in CATEGORICAL_COLS:
         if col in df.columns:
-            mode_val = df[col].mode(dropna=True)
-            df[col] = df[col].fillna(mode_val.iloc[0] if len(mode_val) > 0 else "Unknown")
+            s = df[col]
+            mode_val = s.mode(dropna=True)
+            df[col] = s.fillna(mode_val.iloc[0] if len(mode_val) > 0 else "Unknown")
 
     return df
 
@@ -100,12 +103,10 @@ def cap_outliers_iqr(df: pd.DataFrame, cols) -> pd.DataFrame:
         if s.notna().sum() == 0:
             df[col] = 0.0
             continue
-        q1 = s.quantile(0.25)
-        q3 = s.quantile(0.75)
+        q1, q3 = s.quantile(0.25), s.quantile(0.75)
         iqr = q3 - q1
-        low = q1 - 1.5 * iqr
-        high = q3 + 1.5 * iqr
-        df[col] = s.clip(lower=low, upper=high)
+        low, high = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        df[col] = s.clip(low, high)
     return df
 
 
@@ -143,6 +144,7 @@ def scale_numeric(df: pd.DataFrame, cols):
 def preprocess_for_model(df: pd.DataFrame):
     df = df.copy()
 
+    # Drop missing targets if both exist
     if TARGET_RISK_TYPE in df.columns and TARGET_RISK_LEVEL in df.columns:
         df = df.dropna(subset=[TARGET_RISK_TYPE, TARGET_RISK_LEVEL])
 
@@ -159,20 +161,22 @@ def preprocess_for_model(df: pd.DataFrame):
 
     existing_cat_cols = [c for c in CATEGORICAL_COLS if c in feature_df.columns]
     X = pd.get_dummies(feature_df, columns=existing_cat_cols, drop_first=True)
+
+    # Ensure numeric for sklearn
     X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
 
     return df, X, y_type, y_level, skewness, skewed_cols
 
 
-# ✅ Cache preprocessing outputs so switching pages/tabs doesn't redo get_dummies repeatedly
-@st.cache_data
+# ✅ Cache preprocessing so it doesn't rerun on every UI interaction
+@st.cache_data(show_spinner=False)
 def cached_preprocess(df_raw: pd.DataFrame):
     return preprocess_for_model(df_raw)
 
 
-# -------------------------------------------------------
-# SPLIT HELPERS
-# -------------------------------------------------------
+# =======================================================
+# TRAIN/TEST SPLIT HELPERS
+# =======================================================
 def merge_rare_classes(y: pd.Series, min_count: int = 2, other_label: str = "Other"):
     y = pd.Series(y).copy()
     counts = y.value_counts(dropna=True)
@@ -195,12 +199,14 @@ def safe_train_test_split(X, y, test_size=0.2, random_state=42):
     n = len(y)
     k = y.nunique()
 
+    # If any class has 1 sample => impossible to stratify into both train and test
     if min_class < 2:
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=test_size, random_state=random_state, stratify=None
         )
         return (X_train, X_test, y_train, y_test), False, float(test_size)
 
+    # Adjust test_size to ensure at least 1 sample per class in both splits
     min_test_size = k / n
     max_test_size = 1 - (k / n)
 
@@ -224,20 +230,45 @@ def safe_train_test_split(X, y, test_size=0.2, random_state=42):
     return (X_train, X_test, y_train, y_test), False, float(test_size)
 
 
-# -------------------------------------------------------
-# MODELS
-# -------------------------------------------------------
-def get_models():
+# =======================================================
+# MODELS (SPEED MODES)
+# =======================================================
+def get_models(speed_mode: str = "Fast"):
+    """
+    Speed modes:
+      - Fast: quick to run on Streamlit Cloud
+      - Balanced: decent quality, still OK speed
+      - Thorough: heavier / slower
+    """
+    if speed_mode == "Fast":
+        return {
+            "Logistic Regression": LogisticRegression(max_iter=600, multi_class="auto"),
+            "Random Forest": RandomForestClassifier(
+                n_estimators=120, random_state=42, max_depth=10, n_jobs=1
+            ),
+            "Gradient Boosting": GradientBoostingClassifier(random_state=42),
+        }
+    if speed_mode == "Thorough":
+        return {
+            "Logistic Regression": LogisticRegression(max_iter=1300, multi_class="auto"),
+            "Random Forest": RandomForestClassifier(
+                n_estimators=400, random_state=42, n_jobs=1
+            ),
+            "Gradient Boosting": GradientBoostingClassifier(random_state=42),
+        }
+    # Balanced default
     return {
         "Logistic Regression": LogisticRegression(max_iter=1000, multi_class="auto"),
-        "Random Forest": RandomForestClassifier(n_estimators=200, random_state=42),
+        "Random Forest": RandomForestClassifier(
+            n_estimators=200, random_state=42, max_depth=14, n_jobs=1
+        ),
         "Gradient Boosting": GradientBoostingClassifier(random_state=42),
     }
 
 
 # ✅ Cache trained models as resources (persist across reruns)
-@st.cache_resource
-def cached_train_models(X: pd.DataFrame, y: pd.Series, test_size: float):
+@st.cache_resource(show_spinner=False)
+def cached_train_models(X: pd.DataFrame, y: pd.Series, test_size: float, speed_mode: str):
     y = pd.Series(y)
     mask = y.notna()
     X = X.loc[mask]
@@ -273,7 +304,7 @@ def cached_train_models(X: pd.DataFrame, y: pd.Series, test_size: float):
         "final_test_size": final_test_size,
     }
 
-    models = get_models()
+    models = get_models(speed_mode=speed_mode)
     trained_models = {}
     metrics_list = []
 
@@ -281,7 +312,6 @@ def cached_train_models(X: pd.DataFrame, y: pd.Series, test_size: float):
         model.fit(X_train, y_train)
         trained_models[name] = model
         y_pred = model.predict(X_test)
-
         metrics_list.append({
             "Model": name,
             "Accuracy": accuracy_score(y_test, y_pred),
@@ -294,9 +324,16 @@ def cached_train_models(X: pd.DataFrame, y: pd.Series, test_size: float):
     return trained_models, metrics_df, split_info, split_note, merge_note
 
 
-# ✅ Cache CV outputs (data only)
-@st.cache_data
-def cached_repeated_cv(X: pd.DataFrame, y: pd.Series, n_splits: int, n_repeats: int, random_state: int = 42):
+# ✅ Cache CV outputs
+@st.cache_data(show_spinner=False)
+def cached_repeated_cv(
+    X: pd.DataFrame,
+    y: pd.Series,
+    n_splits: int,
+    n_repeats: int,
+    speed_mode: str,
+    random_state: int = 42
+):
     y = pd.Series(y)
     mask = y.notna()
     X = X.loc[mask]
@@ -326,17 +363,17 @@ def cached_repeated_cv(X: pd.DataFrame, y: pd.Series, n_splits: int, n_repeats: 
     }
 
     rows = []
-    for name, model in get_models().items():
+    models = get_models(speed_mode=speed_mode)
+    for name, model in models.items():
         res = cross_validate(
             model,
             X,
             y_merged,
             cv=cv,
             scoring=scoring,
-            n_jobs=1,  # Cloud-safe
+            n_jobs=1,
             error_score="raise"
         )
-
         rows.append({
             "Model": name,
             "Folds Used": effective_splits,
@@ -353,7 +390,8 @@ def cached_repeated_cv(X: pd.DataFrame, y: pd.Series, n_splits: int, n_repeats: 
     return cv_df, effective_splits, int(n_repeats), min_class, limiting_classes
 
 
-@st.cache_data
+# ✅ Cache SMOTE+Tuning results (button-run in UI)
+@st.cache_data(show_spinner=False)
 def cached_smote_tune_logreg(X: pd.DataFrame, y: pd.Series, test_size: float):
     y = pd.Series(y)
     mask = y.notna()
@@ -404,7 +442,7 @@ def cached_smote_tune_logreg(X: pd.DataFrame, y: pd.Series, test_size: float):
         param_grid=param_grid,
         scoring="f1_weighted",
         cv=5,
-        n_jobs=1,  # Cloud-safe
+        n_jobs=1,
     )
     grid.fit(X_res, y_res)
 
@@ -422,23 +460,20 @@ def cached_smote_tune_logreg(X: pd.DataFrame, y: pd.Series, test_size: float):
     return tuned_metrics, grid.best_params_, split_info, split_note, merge_note, smote_used
 
 
-# -------------------------------------------------------
+# =======================================================
 # VISUALS
-# -------------------------------------------------------
+# =======================================================
 def plot_hist_box(df, col):
     s = pd.to_numeric(df[col], errors="coerce").dropna()
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-
     if len(s) == 0:
         axes[0].text(0.5, 0.5, f"No numeric data for {col}", ha="center", va="center")
         axes[1].text(0.5, 0.5, f"No numeric data for {col}", ha="center", va="center")
     else:
         sns.histplot(s, kde=True, ax=axes[0])
         axes[0].set_title(f"Histogram of {col}")
-
         sns.boxplot(x=s, ax=axes[1])
         axes[1].set_title(f"Boxplot of {col}")
-
     plt.tight_layout()
     return fig
 
@@ -551,9 +586,21 @@ def plot_categorical_topn_bar(
     return fig, counts
 
 
-# -------------------------------------------------------
+# =======================================================
+# UI HELPERS (FAST NAVIGATION)
+# =======================================================
+def add_clear_cache_button():
+    with st.sidebar:
+        st.markdown("---")
+        if st.button("🧹 Clear cached results (if app feels stuck)"):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.success("Cache cleared. Rerun the app.")
+
+
+# =======================================================
 # MAIN APP
-# -------------------------------------------------------
+# =======================================================
 def main():
     st.title("Microplastic Risk Prediction – Streamlit App")
     st.markdown(
@@ -576,12 +623,22 @@ def main():
         ],
     )
 
+    st.sidebar.subheader("Performance")
+    speed_mode = st.sidebar.selectbox(
+        "Speed Mode (recommended on Streamlit Cloud)",
+        ["Fast", "Balanced", "Thorough"],
+        index=0,
+        help="Fast loads fastest. Thorough may be slow on Streamlit Cloud.",
+    )
+
     st.sidebar.subheader("Data source")
     uploaded_file = st.sidebar.file_uploader(
         "Upload Microplastic CSV",
         type=["csv"],
         help="If you don't upload anything, the app will try to use 'Microplastic.csv' from the app folder."
     )
+
+    add_clear_cache_button()
 
     try:
         df_raw = load_data(uploaded_file=uploaded_file)
@@ -601,7 +658,7 @@ def main():
         st.error("❌ No dataset found. Upload a CSV or add 'Microplastic.csv' beside app.py.")
         st.stop()
 
-    # Cached preprocess once per dataset
+    # ✅ Cached preprocess once per dataset
     df_clean, X, y_type, y_level, skewness, skewed_cols = cached_preprocess(df_raw)
 
     # ---------------------------------------------------
@@ -762,7 +819,7 @@ def main():
         with tab_rt:
             if y_type is not None:
                 st.subheader("Random Forest Feature Importance – Risk_Type")
-                rf_rt = RandomForestClassifier(n_estimators=200, random_state=42)
+                rf_rt = RandomForestClassifier(n_estimators=160, random_state=42, n_jobs=1)
                 rf_rt.fit(X, y_type)
                 importances_rt = pd.Series(rf_rt.feature_importances_, index=X.columns).sort_values(ascending=False)
 
@@ -787,7 +844,7 @@ def main():
         with tab_rl:
             if y_level is not None:
                 st.subheader("Random Forest Feature Importance – Risk_Level")
-                rf_rl = RandomForestClassifier(n_estimators=200, random_state=42)
+                rf_rl = RandomForestClassifier(n_estimators=160, random_state=42, n_jobs=1)
                 rf_rl.fit(X, y_level)
                 importances_rl = pd.Series(rf_rl.feature_importances_, index=X.columns).sort_values(ascending=False)
 
@@ -810,162 +867,99 @@ def main():
                 st.warning("Risk_Level column not found.")
 
     # ---------------------------------------------------
-    # PAGE: Classification Modeling (Tasks 4, 5 & 7)
+    # PAGE: Classification Modeling (FAST LOADING)
     # ---------------------------------------------------
     elif page == "Classification Modeling (Tasks 4, 5 & 7)":
         st.header("Tasks 4, 5 & 7: Classification Modeling")
+        st.caption(
+            "Optimized: Train/Test results are cached; Cross-validation runs only when you click **Run**."
+        )
 
-        # ✅ controls
-        st.caption("Optimized: Train/Test results are cached; CV runs only when you click Run.")
+        # These sliders can cause reruns, but caching prevents recomputation
         test_size = st.slider("Holdout test size", 0.1, 0.4, 0.2, 0.05)
 
         tab1, tab2 = st.tabs(["Risk-Type Models", "Risk-Level Models"])
 
+        def modeling_block(y, label: str, key_prefix: str):
+            if y is None:
+                st.warning(f"{label} column not found; cannot train models.")
+                return
+
+            # Use tabs to keep UI tidy; CV tab only runs when button clicked
+            subtab_a, subtab_b = st.tabs(["Train/Test Split (Cached)", "Repeated Stratified K-Fold (Click to Run)"])
+
+            with subtab_a:
+                _, metrics_df, split_info, split_note, merge_note = cached_train_models(
+                    X, y, float(test_size), speed_mode
+                )
+                st.subheader(f"{label} – Train/Test Evaluation")
+                st.dataframe(metrics_df.style.format("{:.3f}"))
+                st.pyplot(plot_metrics_bar(metrics_df, f"({label} – Train/Test)"))
+                st.info(split_note)
+
+                if merge_note is not None:
+                    with st.expander("Rare-class merging details (small classes → 'Other')"):
+                        st.write("Before:")
+                        st.write(merge_note["before"])
+                        st.write("After:")
+                        st.write(merge_note["after"])
+
+                st.markdown("**Train–Test Split Details:**")
+                st.markdown(
+                    f"""
+                    - Training set shape: `{split_info['X_train_shape']}`
+                    - Test set shape: `{split_info['X_test_shape']}`
+                    """
+                )
+                st.write("Training distribution:")
+                st.write(split_info["y_train_counts"])
+                st.write("Test distribution:")
+                st.write(split_info["y_test_counts"])
+
+                st.markdown("**Interpretation:**")
+                st.markdown(
+                    """
+                    - Cached results mean page loads quickly after the first computation.
+                    - Weighted F1-score is informative when labels are imbalanced.
+                    """
+                )
+
+            with subtab_b:
+                # Safer defaults for Cloud
+                folds = st.slider(f"Requested folds ({label})", 2, 10, 3, 1, key=f"{key_prefix}_folds")
+                repeats = st.slider(f"Repeats ({label})", 2, 30, 4, 1, key=f"{key_prefix}_repeats")
+
+                run = st.button(f"Run CV ({label})", key=f"{key_prefix}_run_cv")
+                if run:
+                    with st.spinner("Running repeated stratified CV..."):
+                        try:
+                            cv_df, effective_folds, used_repeats, min_class, limiting_classes = cached_repeated_cv(
+                                X, y, int(folds), int(repeats), speed_mode
+                            )
+                            st.dataframe(cv_df.style.format("{:.3f}"))
+                            st.info(
+                                f"Requested {folds} folds, but used **{effective_folds}** because the smallest class has "
+                                f"**{min_class}** samples (limiting class/es: {', '.join(map(str, limiting_classes))}). "
+                                f"Repeated **{used_repeats}** times → **{effective_folds * used_repeats} total runs**."
+                            )
+                        except ValueError as e:
+                            st.warning(f"Could not run validation: {e}")
+                else:
+                    st.info("Click **Run CV** when you’re ready. This prevents slow page loading.")
+
+                st.markdown("**Interpretation:**")
+                st.markdown(
+                    """
+                    - Cross-validation is computationally heavy (many repeated training runs).
+                    - Running it on-demand keeps the app smooth and responsive.
+                    """
+                )
+
         with tab1:
-            if y_type is None:
-                st.warning("Risk_Type column not found; cannot train models for Risk-Type.")
-            else:
-                subtab_a, subtab_b = st.tabs(["Train/Test Split (Cached)", "Repeated Stratified K-Fold (Run Button)"])
-
-                with subtab_a:
-                    _, metrics_rt, split_info_rt, split_note_rt, merge_note_rt = cached_train_models(X, y_type, test_size)
-                    st.write("Performance Metrics – Risk-Type (Train/Test)")
-                    st.dataframe(metrics_rt.style.format("{:.3f}"))
-                    st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type – Train/Test)"))
-                    st.info(split_note_rt)
-
-                    if merge_note_rt is not None:
-                        with st.expander("Rare-class merging details (small classes → 'Other')"):
-                            st.write("Before:")
-                            st.write(merge_note_rt["before"])
-                            st.write("After:")
-                            st.write(merge_note_rt["after"])
-
-                    st.markdown("**Train–Test Split Details:**")
-                    st.markdown(
-                        f"""
-                        - Training set shape: `{split_info_rt['X_train_shape']}`
-                        - Test set shape: `{split_info_rt['X_test_shape']}`
-                        """
-                    )
-                    st.write("Training distribution:")
-                    st.write(split_info_rt["y_train_counts"])
-                    st.write("Test distribution:")
-                    st.write(split_info_rt["y_test_counts"])
-
-                    st.markdown("**Interpretation:**")
-                    st.markdown(
-                        """
-                        - Cached Train/Test evaluation loads fast when revisiting tabs/pages.
-                        - F1-score (weighted) is useful for imbalanced datasets.
-                        """
-                    )
-
-                with subtab_b:
-                    folds = st.slider("Requested folds (Risk-Type)", 2, 10, 3, 1)
-                    repeats = st.slider("Repeats (Risk-Type)", 2, 30, 5, 1)
-
-                    if st.button("Run CV (Risk-Type)", key="run_cv_rt"):
-                        with st.spinner("Running repeated stratified CV..."):
-                            try:
-                                cv_df, effective_folds, used_repeats, min_class, limiting_classes = cached_repeated_cv(
-                                    X, y_type, folds, repeats
-                                )
-                                st.dataframe(cv_df.style.format("{:.3f}"))
-                                st.info(
-                                    f"Requested {folds} folds, but used **{effective_folds}** because the smallest class has "
-                                    f"**{min_class}** samples (limiting class/es: {', '.join(map(str, limiting_classes))}). "
-                                    f"Repeated **{used_repeats}** times → **{effective_folds * used_repeats} total runs**."
-                                )
-                            except ValueError as e:
-                                st.warning(f"Could not run repeated stratified validation: {e}")
-                    else:
-                        st.info("Click **Run CV (Risk-Type)** to compute cross-validation results.")
-
-                    st.markdown("**Interpretation:**")
-                    st.markdown(
-                        """
-                        - CV is heavy; button-run prevents slow page loading.
-                        - Mean = expected performance, Std = stability.
-                        """
-                    )
+            modeling_block(y_type, "Risk_Type", "rt")
 
         with tab2:
-            if y_level is None:
-                st.warning("Risk_Level column not found; cannot train models for Risk-Level.")
-            else:
-                subtab_a, subtab_b = st.tabs(["Train/Test Split (Cached)", "Repeated Stratified K-Fold (Run Button)"])
-
-                with subtab_a:
-                    _, metrics_rl, split_info_rl, split_note_rl, merge_note_rl = cached_train_models(X, y_level, test_size)
-                    st.write("Performance Metrics – Risk-Level (Train/Test)")
-                    st.dataframe(metrics_rl.style.format("{:.3f}"))
-                    st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level – Train/Test)"))
-                    st.info(split_note_rl)
-
-                    if merge_note_rl is not None:
-                        with st.expander("Rare-class merging details (small classes → 'Other')"):
-                            st.write("Before:")
-                            st.write(merge_note_rl["before"])
-                            st.write("After:")
-                            st.write(merge_note_rl["after"])
-
-                    st.markdown("**Train–Test Split Details:**")
-                    st.markdown(
-                        f"""
-                        - Training set shape: `{split_info_rl['X_train_shape']}`
-                        - Test set shape: `{split_info_rl['X_test_shape']}`
-                        """
-                    )
-                    st.write("Training distribution:")
-                    st.write(split_info_rl["y_train_counts"])
-                    st.write("Test distribution:")
-                    st.write(split_info_rl["y_test_counts"])
-
-                    st.markdown("**Interpretation:**")
-                    st.markdown(
-                        """
-                        - Cached Train/Test evaluation loads fast when revisiting tabs/pages.
-                        - F1-score (weighted) is useful for imbalanced datasets.
-                        """
-                    )
-
-                with subtab_b:
-                    folds = st.slider("Requested folds (Risk-Level)", 2, 10, 3, 1)
-                    repeats = st.slider("Repeats (Risk-Level)", 2, 30, 5, 1)
-
-                    if st.button("Run CV (Risk-Level)", key="run_cv_rl"):
-                        with st.spinner("Running repeated stratified CV..."):
-                            try:
-                                cv_df, effective_folds, used_repeats, min_class, limiting_classes = cached_repeated_cv(
-                                    X, y_level, folds, repeats
-                                )
-                                st.dataframe(cv_df.style.format("{:.3f}"))
-                                st.info(
-                                    f"Requested {folds} folds, but used **{effective_folds}** because the smallest class has "
-                                    f"**{min_class}** samples (limiting class/es: {', '.join(map(str, limiting_classes))}). "
-                                    f"Repeated **{used_repeats}** times → **{effective_folds * used_repeats} total runs**."
-                                )
-                            except ValueError as e:
-                                st.warning(f"Could not run repeated stratified validation: {e}")
-                    else:
-                        st.info("Click **Run CV (Risk-Level)** to compute cross-validation results.")
-
-                    st.markdown("**Interpretation:**")
-                    st.markdown(
-                        """
-                        - CV is heavy; button-run prevents slow page loading.
-                        - Mean = expected performance, Std = stability.
-                        """
-                    )
-
-        st.subheader("Overall Interpretation")
-        st.markdown(
-            """
-            - **Train/Test** is fast once cached and provides an unbiased holdout evaluation.
-            - **Repeated Stratified K-Fold** is more reliable but expensive; run it only when needed.
-            """
-        )
+            modeling_block(y_level, "Risk_Level", "rl")
 
     # ---------------------------------------------------
     # PAGE: Polymer Type Distribution
@@ -984,7 +978,6 @@ def main():
             with tabA:
                 st.subheader("Value Counts of Polymer_Type")
                 st.dataframe(vc.rename("count"))
-
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     """
@@ -1004,7 +997,6 @@ def main():
                     figsize=(10, 7),
                 )
                 st.pyplot(fig)
-
                 st.markdown("**Interpretation:**")
                 st.markdown(
                     f"""
@@ -1025,22 +1017,24 @@ def main():
             st.warning("Risk_Type column not found; cannot run SMOTE or tuning.")
             return
 
-        tab1, tab2 = st.tabs(["Original Distribution & Base Models", "SMOTE + Tuning & Comparison"])
+        tab1, tab2 = st.tabs(["Original Distribution & Base Models", "SMOTE + Tuning (Click to Run)"])
+
+        test_size_smote = st.slider("Holdout test size (SMOTE page)", 0.1, 0.4, 0.2, 0.05, key="smote_ts")
 
         with tab1:
             st.subheader("Class Distribution of Risk-Type (Original)")
             st.write(pd.Series(y_type).value_counts())
-
             st.markdown("**Interpretation:**")
             st.markdown(
                 """
                 - If some classes have very few samples, the dataset is imbalanced.
-                - Imbalance can cause models to favor the majority class, lowering recall for minority classes.
+                - Imbalance often reduces recall for minority classes.
                 """
             )
 
-            test_size = st.slider("Holdout test size (SMOTE page)", 0.1, 0.4, 0.2, 0.05, key="smote_test_size")
-            _, base_metrics_rt, split_info_base_rt, split_note_base, merge_note_base = cached_train_models(X, y_type, test_size)
+            _, base_metrics_rt, split_info_base, split_note_base, merge_note_base = cached_train_models(
+                X, y_type, float(test_size_smote), speed_mode
+            )
 
             st.subheader("Base Models Performance (Risk-Type)")
             st.dataframe(base_metrics_rt.style.format("{:.3f}"))
@@ -1057,18 +1051,19 @@ def main():
             st.markdown("**Train–Test Split (Base):**")
             st.markdown(
                 f"""
-                - Training set shape: `{split_info_base_rt['X_train_shape']}`
-                - Test set shape: `{split_info_base_rt['X_test_shape']}`
+                - Training set shape: `{split_info_base['X_train_shape']}`
+                - Test set shape: `{split_info_base['X_test_shape']}`
                 """
             )
 
         with tab2:
             st.subheader("SMOTE + Hyperparameter Tuning")
-            if st.button("Run SMOTE + Tuning", key="run_smote"):
+
+            if st.button("Run SMOTE + Tuning", key="run_smote_tuning"):
                 with st.spinner("Running SMOTE + GridSearchCV..."):
                     try:
                         tuned_metrics, best_params, split_info_smote, split_note_smote, merge_note_smote, smote_used = (
-                            cached_smote_tune_logreg(X, y_type, test_size)
+                            cached_smote_tune_logreg(X, y_type, float(test_size_smote))
                         )
                         st.write("Best Hyperparameters (Logistic Regression):")
                         st.json(best_params)
@@ -1087,9 +1082,7 @@ def main():
                         st.subheader("Tuned Logistic Regression Performance")
                         st.dataframe(tuned_metrics.style.format("{:.3f}"))
 
-                        # Compare
-                        _, base_metrics_compare, _, _, _ = cached_train_models(X, y_type, test_size)
-                        combined = pd.concat([base_metrics_compare, tuned_metrics])
+                        combined = pd.concat([base_metrics_rt, tuned_metrics])
                         st.subheader("Comparison: Tuned Logistic Regression vs Base Models")
                         st.dataframe(combined.style.format("{:.3f}"))
                         st.pyplot(plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned)"))
@@ -1097,14 +1090,14 @@ def main():
                         st.markdown("**Interpretation (Comparison):**")
                         st.markdown(
                             """
-                            - If tuned model improves recall and F1-score, it indicates better detection of minority classes.
-                            - If improvements are minimal, more data or feature refinement may be required.
+                            - Look for improved weighted F1-score and recall after tuning/SMOTE.
+                            - If gains are small, dataset size/feature quality may be the limiting factor.
                             """
                         )
                     except ValueError as e:
                         st.warning(f"SMOTE/Tuning failed: {e}")
             else:
-                st.info("Click **Run SMOTE + Tuning** to compute results (optimized to avoid slow page load).")
+                st.info("Click **Run SMOTE + Tuning** when ready (prevents slow load).")
 
 
 if __name__ == "__main__":
