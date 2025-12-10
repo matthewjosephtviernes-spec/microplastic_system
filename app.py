@@ -26,7 +26,7 @@ from sklearn.feature_selection import mutual_info_classif
 # ---------------------------
 
 def basic_cleaning(df: pd.DataFrame) -> pd.DataFrame:
-    """Basic cleaning: no heavy transforms, just a clean starting point."""
+    """Basic cleaning: drop rows with missing targets, fill other missing values."""
     df = df.copy()
 
     # Drop rows where targets are missing
@@ -61,6 +61,7 @@ def preprocess_and_select_features(
     - one-hot encode categoricals
     - scale numeric columns
     - mutual information feature selection
+
     Returns:
       X (reduced feature matrix),
       y_level, y_type,
@@ -98,9 +99,11 @@ def preprocess_and_select_features(
         fs_target = y_type
 
     mi = mutual_info_classif(X_encoded, fs_target, random_state=42)
-    mi_scores_df = pd.DataFrame(
-        {"feature": X_encoded.columns, "mi_score": mi}
-    ).sort_values(by="mi_score", ascending=False)
+    mi_scores_df = (
+        pd.DataFrame({"feature": X_encoded.columns, "mi_score": mi})
+        .sort_values(by="mi_score", ascending=False)
+        .reset_index(drop=True)
+    )
 
     # Select top N features
     top_n_features = min(top_n_features, len(mi_scores_df))
@@ -119,32 +122,51 @@ def split_data(
 ):
     """
     Create train/val/test splits for both targets in a consistent way.
-    test_size: proportion of data to hold out as temp (val+test)
-    val_size: proportion of temp that becomes test (so final test = test_size * val_size)
+
+    If stratified split by y_level fails (e.g. very small classes),
+    it falls back to a non-stratified split.
     """
-    # First split: train + temp
-    X_train, X_temp, y_level_train, y_level_temp, y_type_train, y_type_temp = (
-        train_test_split(
+    # ---------- 1st split: train vs temp (val+test) ----------
+    try:
+        X_train, X_temp, y_level_train, y_level_temp, y_type_train, y_type_temp = train_test_split(
             X,
             y_level,
             y_type,
             test_size=test_size,
             random_state=42,
-            stratify=y_level,
+            stratify=y_level,   # try stratified
         )
-    )
+    except ValueError:
+        # Fall back: no stratification
+        X_train, X_temp, y_level_train, y_level_temp, y_type_train, y_type_temp = train_test_split(
+            X,
+            y_level,
+            y_type,
+            test_size=test_size,
+            random_state=42,
+            stratify=None,
+        )
 
-    # Second split: val + test
-    X_val, X_test, y_level_val, y_level_test, y_type_val, y_type_test = (
-        train_test_split(
+    # ---------- 2nd split: temp into val vs test ----------
+    try:
+        X_val, X_test, y_level_val, y_level_test, y_type_val, y_type_test = train_test_split(
             X_temp,
             y_level_temp,
             y_type_temp,
             test_size=val_size,
             random_state=42,
-            stratify=y_level_temp,
+            stratify=y_level_temp,  # try stratified again
         )
-    )
+    except ValueError:
+        # Fall back: no stratification
+        X_val, X_test, y_level_val, y_level_test, y_type_val, y_type_test = train_test_split(
+            X_temp,
+            y_level_temp,
+            y_type_temp,
+            test_size=val_size,
+            random_state=42,
+            stratify=None,
+        )
 
     splits = {
         "X_train": X_train,
@@ -222,9 +244,11 @@ def get_feature_importance(model, feature_names):
     """Return feature importance DataFrame if model supports it."""
     if hasattr(model, "feature_importances_"):
         fi = model.feature_importances_
-        df = pd.DataFrame(
-            {"feature": feature_names, "importance": fi}
-        ).sort_values(by="importance", ascending=False)
+        df = (
+            pd.DataFrame({"feature": feature_names, "importance": fi})
+            .sort_values(by="importance", ascending=False)
+            .reset_index(drop=True)
+        )
         return df
     return None
 
@@ -292,7 +316,7 @@ def main():
 
     st.sidebar.title("Navigation")
 
-    # 🔼 CSV UPLOAD HERE
+    # CSV UPLOAD
     uploaded_file = st.sidebar.file_uploader(
         "Upload MicroPlastic CSV", type=["csv"]
     )
@@ -357,7 +381,10 @@ def main():
     # --------------------
 
     if page == "Home":
-        st.markdown('<div class="big-title">🏠 Microplastic Risk Modeling</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="big-title">🏠 Microplastic Risk Modeling</div>',
+            unsafe_allow_html=True,
+        )
         st.markdown(
             """
             <div class="sub-title">
@@ -421,7 +448,8 @@ def main():
         if "Risk_Level" in df_raw.columns and "Risk_Score" in df_raw.columns:
             st.subheader("Risk_Score by Risk_Level (summary)")
             st.write(
-                df_raw.groupby("Risk_Level")["Risk_Score"].describe()[["mean", "std", "min", "max"]]
+                df_raw.groupby("Risk_Level")["Risk_Score"]
+                .describe()[["mean", "std", "min", "max"]]
             )
 
     elif page == "Preprocess & Feature Selection":
@@ -473,14 +501,20 @@ def main():
         st.subheader("Test Set Evaluation – Risk_Level")
         y_level_pred_test = best_model_level.predict(X_test)
         report_level = classification_report(
-            y_level_test, y_level_pred_test, zero_division=0, output_dict=False
+            y_level_test,
+            y_level_pred_test,
+            zero_division=0,
+            output_dict=False,
         )
         st.text(report_level)
 
         st.subheader("Test Set Evaluation – Risk_Type")
         y_type_pred_test = best_model_type.predict(X_test)
         report_type = classification_report(
-            y_type_test, y_type_pred_test, zero_division=0, output_dict=False
+            y_type_test,
+            y_type_pred_test,
+            zero_division=0,
+            output_dict=False,
         )
         st.text(report_type)
 
