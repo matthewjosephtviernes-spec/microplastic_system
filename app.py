@@ -708,15 +708,15 @@ def main():
             "Preprocessing (Task 2)",
             "Feature Selection & Relevance (Task 3 & 6)",
         ],
-        "📊 Visualization": [
-            "Visualization Dashboard",
-        ],
         "🧠 Modeling": [
             "Classification Modeling (Tasks 4, 5 & 7)",
             "Cross Validation (K-Fold)",
         ],
         "⚙️ Optimization": [
             "SMOTE & Hyperparameter Tuning (Risk_Type)",
+        ],
+        "📊 Visualization": [
+            "Visualization Dashboard",
         ],
     }
 
@@ -904,6 +904,203 @@ def main():
                 rf_importance(TARGET_RISK_LEVEL)
 
     # -------------------- PAGE 4 --------------------
+    elif page == "Classification Modeling (Tasks 4, 5 & 7)":
+        st.header("Classification Modeling (Tasks 4, 5 & 7)")
+        tab1, tab2 = st.tabs(["Risk_Type", "Risk_Level"])
+
+        with tab1:
+            if TARGET_RISK_TYPE not in df_raw.columns:
+                st.warning("Risk_Type column not found; cannot train models for Risk-Type.")
+            else:
+                st.subheader("Models for Risk-Type (Holdout split)")
+                with st.spinner("Training models (cached)."):
+                    _, metrics_rt, split_info_rt, split_note_rt = train_holdout_models_cached(
+                        df_raw, TARGET_RISK_TYPE, test_size, drop_cols_for_model, fast_mode, use_smote=False
+                    )
+                st.dataframe(metrics_rt.round(3))
+                st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type)"))
+                st.info(split_note_rt)
+                st.write("Class distribution in training set:")
+                st.write(split_info_rt["y_train_counts"])
+                st.write("Class distribution in test set:")
+                st.write(split_info_rt["y_test_counts"])
+
+        with tab2:
+            if TARGET_RISK_LEVEL not in df_raw.columns:
+                st.warning("Risk_Level column not found; cannot train models for Risk-Level.")
+            else:
+                st.subheader("Models for Risk-Level (Holdout split)")
+                with st.spinner("Training models (cached)."):
+                    _, metrics_rl, split_info_rl, split_note_rl = train_holdout_models_cached(
+                        df_raw, TARGET_RISK_LEVEL, test_size, drop_cols_for_model, fast_mode, use_smote=False
+                    )
+                st.dataframe(metrics_rl.round(3))
+                st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level)"))
+                st.info(split_note_rl)
+                st.write("Class distribution in training set:")
+                st.write(split_info_rl["y_train_counts"])
+                st.write("Class distribution in test set:")
+                st.write(split_info_rl["y_test_counts"])
+
+        st.subheader("Overall Notes (Speed)")
+        st.markdown(
+            f"""
+            - Current modeling drop columns: **{', '.join(drop_cols_for_model) if drop_cols_for_model else 'None'}**  
+            - If the page is slow, keep **Drop Location & Author** ON and keep **Fast Mode** ON.
+            """
+        )
+
+    # -------------------- PAGE 5 --------------------
+    elif page == "Cross Validation (K-Fold)":
+        st.header("Cross Validation (K-Fold) for Classification Model")
+
+        st.markdown(
+            """
+            This section validates a **classification model** using K-Fold Cross Validation.
+
+            - Target variable: **Risk_Type**  
+            - Model: **Logistic Regression** (lightweight, stable, good baseline)  
+            - Preprocessing (imputation, scaling, encoding) is included inside the pipeline → leakage-safe.
+            """
+        )
+
+        target = TARGET_RISK_TYPE
+        model_name = "Logistic Regression"
+        st.info(f"Target fixed to **{target}** and model fixed to **{model_name}** for validation.")
+
+        # Light CV: k between 3 and 5 only
+        n_splits = st.slider("Number of folds (k)", min_value=3, max_value=5, value=3, step=1)
+        stratified = st.checkbox("Use Stratified K-Fold (recommended for classification)", value=True)
+
+        # Optional sampling for safety
+        max_rows = 500
+        if len(df_raw) > max_rows:
+            st.warning(
+                f"Dataset has {len(df_raw)} rows. For stable CV in limited resources, "
+                f"we sample {max_rows} rows for cross-validation."
+            )
+            df_cv = df_raw.sample(max_rows, random_state=42).reset_index(drop=True)
+        else:
+            df_cv = df_raw.copy()
+
+        st.divider()
+
+        colA, colB = st.columns([1, 2])
+        with colA:
+            st.subheader("Risk_Type distribution (after rare-class merge)")
+            if target in df_cv.columns:
+                y_preview = merge_rare_classes(df_cv[target].dropna(), min_count=2, other_label="Other")
+                st.write(y_preview.value_counts())
+            else:
+                st.warning(f"Column '{target}' not found in the dataset.")
+
+        with colB:
+            if st.button("Run Cross-Validation", type="primary"):
+                with st.spinner("Running K-Fold CV on Logistic Regression (Risk_Type)..."):
+                    try:
+                        summary_df, _, cv_note = run_cv(
+                            df_raw=df_cv,
+                            target_col=target,
+                            model_name=model_name,
+                            n_splits=n_splits,
+                            stratified=stratified,
+                            drop_cols_for_model=drop_cols_for_model,
+                            fast_mode=fast_mode,
+                        )
+                        st.info(cv_note)
+                        st.subheader("CV Summary (mean ± std)")
+                        st.dataframe(summary_df.round(4))
+
+                        st.markdown(
+                            """
+                            **Interpretation hint (for defense):**  
+                            - *Accuracy* shows overall correct predictions across folds.  
+                            - *Precision (weighted)* and *Recall (weighted)* account for class imbalance.  
+                            - *F1-score (weighted)* balances precision and recall and is a good summary metric.  
+                            """
+                        )
+                    except Exception as e:
+                        st.error(f"CV failed: {e}")
+
+    # -------------------- PAGE 6 --------------------
+    elif page == "SMOTE & Hyperparameter Tuning (Risk_Type)":
+        st.header("Address Class Imbalance & Tune Logistic Regression (Risk-Type)")
+
+        if TARGET_RISK_TYPE not in df_raw.columns:
+            st.warning("Risk_Type column not found; cannot run SMOTE or tuning.")
+            return
+
+        tab1, tab2 = st.tabs(["Original Distribution & Base Models", "SMOTE + Tuning & Comparison"])
+
+        with tab1:
+            st.subheader("Class Distribution of Risk-Type (after rare-class merge)")
+            y_preview = merge_rare_classes(df_raw[TARGET_RISK_TYPE].dropna(), min_count=2, other_label="Other")
+            st.write(y_preview.value_counts())
+
+            with st.spinner("Training base models (cached)."):
+                _, base_metrics_rt, _, split_note_base = train_holdout_models_cached(
+                    df_raw, TARGET_RISK_TYPE, test_size, drop_cols_for_model, fast_mode, use_smote=False
+                )
+
+            st.subheader("Base Models Performance (Risk-Type)")
+            st.dataframe(base_metrics_rt.round(3))
+            st.pyplot(plot_metrics_bar(base_metrics_rt, "(Risk-Type – Base)"))
+            st.info(split_note_base)
+
+        with tab2:
+            st.subheader("SMOTE + Hyperparameter Tuning (LogReg)")
+            if not IMBLEARN_OK:
+                st.error("imbalanced-learn is required. Install: pip install imbalanced-learn")
+                st.stop()
+
+            with st.spinner("Running GridSearchCV on training split (leakage-safe)."):
+                _, tuned_metrics, best_params, _, split_note_smote = smote_and_tune_logreg_pipeline(
+                    df_raw, TARGET_RISK_TYPE, test_size, drop_cols_for_model, fast_mode
+                )
+
+            st.write("Best Hyperparameters:")
+            st.json(best_params)
+            st.info(split_note_smote)
+
+            st.subheader("Tuned Logistic Regression Performance")
+            st.dataframe(tuned_metrics.round(3))
+
+            combined = pd.concat([base_metrics_rt, tuned_metrics])
+            st.subheader("Comparison: Tuned Logistic Regression vs Base Models")
+            st.dataframe(combined.round(3))
+            st.pyplot(plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned)"))
+
+    # -------------------- PAGE 7 --------------------
+    elif page == "Polymer Type Distribution":
+        st.header("Polymer Type Distribution")
+        df = handle_missing_values(df_raw)
+
+        if "Polymer_Type" in df.columns:
+            polymer = df["Polymer_Type"].astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "None": np.nan})
+            polymer = polymer.dropna()
+            vc = polymer.value_counts()
+
+            tabA, tabB = st.tabs(["Counts Table", "Readable Plot (Top N + Other)"])
+
+            with tabA:
+                st.subheader("Value Counts of Polymer_Type")
+                st.dataframe(vc.rename("count"))
+
+            with tabB:
+                st.subheader("Bar Plot of Polymer_Type Distribution (Readable)")
+                top_n = st.slider("Show Top N polymer types", min_value=5, max_value=30, value=15, step=1)
+                fig, _ = plot_categorical_topn_bar(
+                    polymer,
+                    title=f"Distribution of Polymer_Type (Top {top_n} + Other)",
+                    top_n=top_n,
+                    other_label="Other",
+                    figsize=(10, 7),
+                )
+                st.pyplot(fig)
+        else:
+            st.warning("Column 'Polymer_Type' not found in the dataset.")
+
+    # -------------------- PAGE 8 (LAST) --------------------
     elif page == "Visualization Dashboard":
         st.header("Visualization Dashboard")
 
@@ -1011,7 +1208,6 @@ def main():
                     if color_label is not None:
                         labels = df_raw.loc[mask, color_label].astype(str)
                         uniq = labels.unique()
-                        # simple discrete colors for categories
                         palette = sns.color_palette("tab10", n_colors=len(uniq))
                         for lab, colr in zip(uniq, palette):
                             sel = labels == lab
@@ -1097,203 +1293,6 @@ def main():
                 - How **industrial activity** and other factors may drive higher risk levels.
                 """
             )
-
-    # -------------------- PAGE 5 --------------------
-    elif page == "Classification Modeling (Tasks 4, 5 & 7)":
-        st.header("Classification Modeling (Tasks 4, 5 & 7)")
-        tab1, tab2 = st.tabs(["Risk_Type", "Risk_Level"])
-
-        with tab1:
-            if TARGET_RISK_TYPE not in df_raw.columns:
-                st.warning("Risk_Type column not found; cannot train models for Risk-Type.")
-            else:
-                st.subheader("Models for Risk-Type (Holdout split)")
-                with st.spinner("Training models (cached)."):
-                    _, metrics_rt, split_info_rt, split_note_rt = train_holdout_models_cached(
-                        df_raw, TARGET_RISK_TYPE, test_size, drop_cols_for_model, fast_mode, use_smote=False
-                    )
-                st.dataframe(metrics_rt.round(3))
-                st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type)"))
-                st.info(split_note_rt)
-                st.write("Class distribution in training set:")
-                st.write(split_info_rt["y_train_counts"])
-                st.write("Class distribution in test set:")
-                st.write(split_info_rt["y_test_counts"])
-
-        with tab2:
-            if TARGET_RISK_LEVEL not in df_raw.columns:
-                st.warning("Risk_Level column not found; cannot train models for Risk-Level.")
-            else:
-                st.subheader("Models for Risk-Level (Holdout split)")
-                with st.spinner("Training models (cached)."):
-                    _, metrics_rl, split_info_rl, split_note_rl = train_holdout_models_cached(
-                        df_raw, TARGET_RISK_LEVEL, test_size, drop_cols_for_model, fast_mode, use_smote=False
-                    )
-                st.dataframe(metrics_rl.round(3))
-                st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level)"))
-                st.info(split_note_rl)
-                st.write("Class distribution in training set:")
-                st.write(split_info_rl["y_train_counts"])
-                st.write("Class distribution in test set:")
-                st.write(split_info_rl["y_test_counts"])
-
-        st.subheader("Overall Notes (Speed)")
-        st.markdown(
-            f"""
-            - Current modeling drop columns: **{', '.join(drop_cols_for_model) if drop_cols_for_model else 'None'}**  
-            - If the page is slow, keep **Drop Location & Author** ON and keep **Fast Mode** ON.
-            """
-        )
-
-    # -------------------- PAGE 6 --------------------
-    elif page == "Cross Validation (K-Fold)":
-        st.header("Cross Validation (K-Fold) for Classification Model")
-
-        st.markdown(
-            """
-            This section validates a **classification model** using K-Fold Cross Validation.
-
-            - Target variable: **Risk_Type**  
-            - Model: **Logistic Regression** (lightweight, stable, good baseline)  
-            - Preprocessing (imputation, scaling, encoding) is included inside the pipeline → leakage-safe.
-            """
-        )
-
-        target = TARGET_RISK_TYPE
-        model_name = "Logistic Regression"
-        st.info(f"Target fixed to **{target}** and model fixed to **{model_name}** for validation.")
-
-        # Light CV: k between 3 and 5 only
-        n_splits = st.slider("Number of folds (k)", min_value=3, max_value=5, value=3, step=1)
-        stratified = st.checkbox("Use Stratified K-Fold (recommended for classification)", value=True)
-
-        # Optional sampling for safety
-        max_rows = 500
-        if len(df_raw) > max_rows:
-            st.warning(
-                f"Dataset has {len(df_raw)} rows. For stable CV in limited resources, "
-                f"we sample {max_rows} rows for cross-validation."
-            )
-            df_cv = df_raw.sample(max_rows, random_state=42).reset_index(drop=True)
-        else:
-            df_cv = df_raw.copy()
-
-        st.divider()
-
-        colA, colB = st.columns([1, 2])
-        with colA:
-            st.subheader("Risk_Type distribution (after rare-class merge)")
-            if target in df_cv.columns:
-                y_preview = merge_rare_classes(df_cv[target].dropna(), min_count=2, other_label="Other")
-                st.write(y_preview.value_counts())
-            else:
-                st.warning(f"Column '{target}' not found in the dataset.")
-
-        with colB:
-            if st.button("Run Cross-Validation", type="primary"):
-                with st.spinner("Running K-Fold CV on Logistic Regression (Risk_Type)..."):
-                    try:
-                        summary_df, _, cv_note = run_cv(
-                            df_raw=df_cv,
-                            target_col=target,
-                            model_name=model_name,
-                            n_splits=n_splits,
-                            stratified=stratified,
-                            drop_cols_for_model=drop_cols_for_model,
-                            fast_mode=fast_mode,
-                        )
-                        st.info(cv_note)
-                        st.subheader("CV Summary (mean ± std)")
-                        st.dataframe(summary_df.round(4))
-
-                        st.markdown(
-                            """
-                            **Interpretation hint (for defense):**  
-                            - *Accuracy* shows overall correct predictions across folds.  
-                            - *Precision (weighted)* and *Recall (weighted)* account for class imbalance.  
-                            - *F1-score (weighted)* balances precision and recall and is a good summary metric.  
-                            """
-                        )
-                    except Exception as e:
-                        st.error(f"CV failed: {e}")
-
-    # -------------------- PAGE 7 --------------------
-    elif page == "Polymer Type Distribution":
-        st.header("Polymer Type Distribution")
-        df = handle_missing_values(df_raw)
-
-        if "Polymer_Type" in df.columns:
-            polymer = df["Polymer_Type"].astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "None": np.nan})
-            polymer = polymer.dropna()
-            vc = polymer.value_counts()
-
-            tabA, tabB = st.tabs(["Counts Table", "Readable Plot (Top N + Other)"])
-
-            with tabA:
-                st.subheader("Value Counts of Polymer_Type")
-                st.dataframe(vc.rename("count"))
-
-            with tabB:
-                st.subheader("Bar Plot of Polymer_Type Distribution (Readable)")
-                top_n = st.slider("Show Top N polymer types", min_value=5, max_value=30, value=15, step=1)
-                fig, _ = plot_categorical_topn_bar(
-                    polymer,
-                    title=f"Distribution of Polymer_Type (Top {top_n} + Other)",
-                    top_n=top_n,
-                    other_label="Other",
-                    figsize=(10, 7),
-                )
-                st.pyplot(fig)
-        else:
-            st.warning("Column 'Polymer_Type' not found in the dataset.")
-
-    # -------------------- PAGE 8 --------------------
-    elif page == "SMOTE & Hyperparameter Tuning (Risk_Type)":
-        st.header("Address Class Imbalance & Tune Logistic Regression (Risk-Type)")
-
-        if TARGET_RISK_TYPE not in df_raw.columns:
-            st.warning("Risk_Type column not found; cannot run SMOTE or tuning.")
-            return
-
-        tab1, tab2 = st.tabs(["Original Distribution & Base Models", "SMOTE + Tuning & Comparison"])
-
-        with tab1:
-            st.subheader("Class Distribution of Risk-Type (after rare-class merge)")
-            y_preview = merge_rare_classes(df_raw[TARGET_RISK_TYPE].dropna(), min_count=2, other_label="Other")
-            st.write(y_preview.value_counts())
-
-            with st.spinner("Training base models (cached)."):
-                _, base_metrics_rt, _, split_note_base = train_holdout_models_cached(
-                    df_raw, TARGET_RISK_TYPE, test_size, drop_cols_for_model, fast_mode, use_smote=False
-                )
-
-            st.subheader("Base Models Performance (Risk-Type)")
-            st.dataframe(base_metrics_rt.round(3))
-            st.pyplot(plot_metrics_bar(base_metrics_rt, "(Risk-Type – Base)"))
-            st.info(split_note_base)
-
-        with tab2:
-            st.subheader("SMOTE + Hyperparameter Tuning (LogReg)")
-            if not IMBLEARN_OK:
-                st.error("imbalanced-learn is required. Install: pip install imbalanced-learn")
-                st.stop()
-
-            with st.spinner("Running GridSearchCV on training split (leakage-safe)."):
-                _, tuned_metrics, best_params, _, split_note_smote = smote_and_tune_logreg_pipeline(
-                    df_raw, TARGET_RISK_TYPE, test_size, drop_cols_for_model, fast_mode
-                )
-
-            st.write("Best Hyperparameters:")
-            st.json(best_params)
-            st.info(split_note_smote)
-
-            st.subheader("Tuned Logistic Regression Performance")
-            st.dataframe(tuned_metrics.round(3))
-
-            combined = pd.concat([base_metrics_rt, tuned_metrics])
-            st.subheader("Comparison: Tuned Logistic Regression vs Base Models")
-            st.dataframe(combined.round(3))
-            st.pyplot(plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned)"))
 
 
 if __name__ == "__main__":
