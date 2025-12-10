@@ -700,14 +700,13 @@ def main():
         help="If you don't upload anything, the app will try to use 'Microplastic.csv' from the app folder."
     )
 
-    # Optional feedback text sa main area
     if uploaded_file is not None:
         st.success("✅ CSV uploaded successfully. All pages will use this dataset.")
     else:
         st.info("Using default 'Microplastic.csv' in the app folder (if available).")
 
     # =====================================================
-    # Sidebar Navigation
+    # Sidebar Navigation (COMPACT)
     # =====================================================
     st.sidebar.header("Navigation")
 
@@ -737,6 +736,7 @@ def main():
     if "nav_page" not in st.session_state:
         st.session_state["nav_page"] = NAV[st.session_state["nav_category"]][0]
 
+    # Category (selectbox)
     category = st.sidebar.selectbox(
         "Category",
         list(NAV.keys()),
@@ -748,23 +748,25 @@ def main():
     if st.session_state["nav_page"] not in pages_in_cat:
         st.session_state["nav_page"] = pages_in_cat[0]
 
-    page = st.sidebar.radio(
-        "Go to",
+    # ✅ Page selector as selectbox (dili na radio, mas mubo)
+    page = st.sidebar.selectbox(
+        "Page",
         pages_in_cat,
         index=pages_in_cat.index(st.session_state["nav_page"])
     )
     st.session_state["nav_page"] = page
 
-    st.sidebar.subheader("Performance")
-    fast_mode = st.sidebar.toggle("Fast Mode (recommended)", value=True)
-    test_size = st.sidebar.slider("Test size", min_value=0.1, max_value=0.4, value=0.2, step=0.05)
-
-    st.sidebar.subheader("Model Features")
-    drop_location_author = st.sidebar.checkbox(
-        "Drop Location & Author for modeling/CV (speeds up a lot)",
-        value=True,
-        help="These columns have many unique values and cause huge one-hot matrices. Keep them for EDA, drop for modeling."
-    )
+    # =====================================================
+    # Compact Performance & Model Settings (inside expander)
+    # =====================================================
+    with st.sidebar.expander("⚙️ Advanced settings", expanded=False):
+        fast_mode = st.toggle("Fast Mode (recommended)", value=True)
+        test_size = st.slider("Test size", min_value=0.1, max_value=0.4, value=0.2, step=0.05)
+        drop_location_author = st.checkbox(
+            "Drop Location & Author for modeling/CV",
+            value=True,
+            help="These columns have many unique values and cause huge one-hot matrices. Keep them for EDA, drop for modeling."
+        )
     drop_cols_for_model = tuple(DEFAULT_MODEL_DROP_COLS) if drop_location_author else tuple()
 
     # load data using uploaded_file from sidebar
@@ -980,7 +982,7 @@ def main():
         max_rows = 500
         if len(df_raw) > max_rows:
             st.warning(
-                f"Dataset has {len(df_raw)} rows. For stable CV in limited resources, "
+                f"Dataset has {len[df_raw]} rows. For stable CV in limited resources, "
                 f"we sample {max_rows} rows for cross-validation."
             )
             df_cv = df_raw.sample(max_rows, random_state=42).reset_index(drop=True)
