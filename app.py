@@ -7,7 +7,6 @@ import pandas as pd
 import streamlit as st
 
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -69,13 +68,12 @@ def preprocess_and_select_features(
     Full preprocessing:
     - basic cleaning
     - one-hot encode categoricals
-    - scale numeric columns
     - mutual information feature selection
 
     Returns:
       X (reduced feature matrix),
       y_level, y_type,
-      selected_features, scaler, mi_scores_df
+      selected_features, mi_scores_df
     """
     df = basic_cleaning(df)
 
@@ -89,18 +87,11 @@ def preprocess_and_select_features(
     # Feature matrix (drop targets)
     X = df.drop(columns=["Risk_Level", "Risk_Type"])
 
-    # Identify categorical & numeric features
+    # Identify categorical features (numeric are left as-is, no scaling)
     cat_cols = X.select_dtypes(include=["object"]).columns.tolist()
-    num_cols = X.select_dtypes(include=["int64", "float64"]).columns.tolist()
 
     # One-hot encode categoricals
     X_encoded = pd.get_dummies(X, columns=cat_cols, drop_first=True)
-
-    # Scale numeric columns
-    scaler = StandardScaler()
-    num_cols_encoded = [c for c in X_encoded.columns if c in num_cols]
-    if num_cols_encoded:
-        X_encoded[num_cols_encoded] = scaler.fit_transform(X_encoded[num_cols_encoded])
 
     # Mutual information for feature selection (use Risk_Level by default)
     if fs_target_col == "Risk_Level":
@@ -120,7 +111,7 @@ def preprocess_and_select_features(
     selected_features = mi_scores_df["feature"].head(top_n_features).tolist()
     X_reduced = X_encoded[selected_features].copy()
 
-    return X_reduced, y_level, y_type, selected_features, scaler, mi_scores_df
+    return X_reduced, y_level, y_type, selected_features, mi_scores_df
 
 
 def split_data(
@@ -263,41 +254,35 @@ def get_feature_importance(model, feature_names):
     return None
 
 
-def preprocess_single_input(sample_dict, df_template, selected_features, scaler):
+def preprocess_single_input(sample_dict, df_template, selected_features):
     """
     Given a dict of user inputs, align with training preprocessing:
     - Create single-row DataFrame
     - One-hot encode using same columns
-    - Scale numeric columns using fitted scaler
     - Select and order columns to match selected_features
+    (No scaling is applied here; models are trained on unscaled data.)
     """
-    df = df_template.copy().iloc[:0]  # empty frame with same columns
+    df = df_template.copy().iloc[:0]  # empty frame with same columns as template
     df = pd.concat([df, pd.DataFrame([sample_dict])], ignore_index=True)
 
-    # Basic cleaning like we did before
+    # Basic cleaning
     df = basic_cleaning(df)
 
-    # Separate targets if they exist in template
+    # Drop targets if present
     drop_cols = [c for c in ["Risk_Level", "Risk_Type"] if c in df.columns]
     X = df.drop(columns=drop_cols)
 
+    # One-hot encode categoricals
     cat_cols = X.select_dtypes(include=["object"]).columns.tolist()
-    num_cols = X.select_dtypes(include=["int64", "float64"]).columns.tolist()
-
-    # One-hot encode using new data
     X_encoded = pd.get_dummies(X, columns=cat_cols, drop_first=True)
 
-    # Re-align columns to training columns (selected_features)
+    # Ensure all selected_features exist in X_encoded
     for col in selected_features:
         if col not in X_encoded.columns:
             X_encoded[col] = 0.0
 
+    # Keep only selected_features and order them
     X_encoded = X_encoded[selected_features]
-
-    # Scale numeric columns (intersection of numeric + selected_features)
-    num_cols_sel = [c for c in selected_features if c in num_cols]
-    if num_cols_sel:
-        X_encoded[num_cols_sel] = scaler.transform(X_encoded[num_cols_sel])
 
     return X_encoded
 
@@ -357,7 +342,7 @@ def main():
 
     # Preprocess and select features once
     try:
-        X, y_level, y_type, selected_features, scaler, mi_scores_df = (
+        X, y_level, y_type, selected_features, mi_scores_df = (
             preprocess_and_select_features(df_raw)
         )
     except Exception as e:
@@ -409,7 +394,7 @@ def main():
             """
             1. **Data Loading & Basic Cleaning** – upload CSV, handle missing values  
             2. **EDA & Risk Exploration** – visualize distributions & class balance  
-            3. **Preprocess & Feature Engineering** – encode categoricals, scale numerics  
+            3. **Preprocess & Feature Engineering** – encode categoricals  
             4. **Feature Selection** – select top features using mutual information  
             5. **Model Training** – train multiple classifiers for `Risk_Level` & `Risk_Type`  
             6. **Model Validation** – compare models and evaluate on test set  
@@ -613,7 +598,6 @@ def main():
                 sample,
                 df_template=df_clean,
                 selected_features=selected_features,
-                scaler=scaler,
             )
 
             pred_level = best_model_level.predict(X_new)[0]
@@ -629,7 +613,6 @@ def main():
                         "best_model_level": best_model_level,
                         "best_model_type": best_model_type,
                         "selected_features": selected_features,
-                        "scaler": scaler,
                     },
                     buf,
                 )
