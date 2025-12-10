@@ -505,8 +505,6 @@ def run_cv(
     cv, cv_note = pick_safe_cv(y, n_splits, stratified)
     preprocessor = build_preprocess_pipeline_cached(df_raw, drop_cols_for_model)
 
-    # NOTE: For CV we removed SMOTE to keep it very lightweight and robust
-
     fold_scores = {
         "accuracy": [],
         "precision_w": [],
@@ -694,6 +692,19 @@ def main():
         """
     )
 
+    # 🔼 DATA UPLOAD SECTION SA TAAS (MAIN PAGE)
+    st.subheader("Upload Dataset")
+    uploaded_file = st.file_uploader(
+        "Upload Microplastic CSV",
+        type=["csv"],
+        help="If you don't upload anything, the app will try to use 'Microplastic.csv' from the app folder."
+    )
+
+    if uploaded_file is not None:
+        st.success("✅ CSV uploaded successfully. All pages will use this dataset.")
+    else:
+        st.info("Using default 'Microplastic.csv' in the app folder (if available).")
+
     # =====================================================
     # Sidebar Navigation
     # =====================================================
@@ -755,13 +766,7 @@ def main():
     )
     drop_cols_for_model = tuple(DEFAULT_MODEL_DROP_COLS) if drop_location_author else tuple()
 
-    st.sidebar.subheader("Data source")
-    uploaded_file = st.sidebar.file_uploader(
-        "Upload Microplastic CSV",
-        type=["csv"],
-        help="If you don't upload anything, the app will try to use 'Microplastic.csv' from the app folder."
-    )
-
+    # load data using uploaded_file from top
     try:
         df_raw = load_data(uploaded_file=uploaded_file)
     except UnicodeDecodeError:
@@ -968,11 +973,9 @@ def main():
         model_name = "Logistic Regression"
         st.info(f"Target fixed to **{target}** and model fixed to **{model_name}** for validation.")
 
-        # Light CV: k between 3 and 5 only
         n_splits = st.slider("Number of folds (k)", min_value=3, max_value=5, value=3, step=1)
         stratified = st.checkbox("Use Stratified K-Fold (recommended for classification)", value=True)
 
-        # Optional sampling for safety
         max_rows = 500
         if len(df_raw) > max_rows:
             st.warning(
@@ -1234,7 +1237,6 @@ def main():
         with tab4:
             st.subheader("Risk vs Microplastic and Environmental Factors")
 
-            # 1) MP_Count_per_L vs Risk_Level
             if "MP_Count_per_L" in df_raw.columns and TARGET_RISK_LEVEL in df_raw.columns:
                 st.markdown("#### MP_Count_per_L by Risk_Level")
                 st.pyplot(
@@ -1252,7 +1254,6 @@ def main():
 
             st.divider()
 
-            # 2) Microplastic_Size_mm vs Risk_Type
             if "Microplastic_Size_mm" in df_raw.columns and TARGET_RISK_TYPE in df_raw.columns:
                 st.markdown("#### Microplastic_Size_mm by Risk_Type")
                 st.pyplot(
@@ -1270,7 +1271,6 @@ def main():
 
             st.divider()
 
-            # 3) Risk_Score vs Industrial_Activity (if available)
             if "Risk_Score" in df_raw.columns and "Industrial_Activity" in df_raw.columns:
                 st.markdown("#### Risk_Score by Industrial_Activity")
                 st.pyplot(
