@@ -982,7 +982,7 @@ def main():
         max_rows = 500
         if len(df_raw) > max_rows:
             st.warning(
-                f"Dataset has {len[df_raw]} rows. For stable CV in limited resources, "
+                f"Dataset has {len(df_raw)} rows. For stable CV in limited resources, "
                 f"we sample {max_rows} rows for cross-validation."
             )
             df_cv = df_raw.sample(max_rows, random_state=42).reset_index(drop=True)
