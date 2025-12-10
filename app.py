@@ -692,14 +692,15 @@ def main():
         """
     )
 
-    # 🔼 DATA UPLOAD SECTION SA TAAS (MAIN PAGE)
-    st.subheader("Upload Dataset")
-    uploaded_file = st.file_uploader(
+    # 👉 DATA UPLOAD SA TAAS SA SIDEBAR (BEFORE NAVIGATION)
+    st.sidebar.subheader("Data source")
+    uploaded_file = st.sidebar.file_uploader(
         "Upload Microplastic CSV",
         type=["csv"],
         help="If you don't upload anything, the app will try to use 'Microplastic.csv' from the app folder."
     )
 
+    # Optional feedback text sa main area
     if uploaded_file is not None:
         st.success("✅ CSV uploaded successfully. All pages will use this dataset.")
     else:
@@ -766,7 +767,7 @@ def main():
     )
     drop_cols_for_model = tuple(DEFAULT_MODEL_DROP_COLS) if drop_location_author else tuple()
 
-    # load data using uploaded_file from top
+    # load data using uploaded_file from sidebar
     try:
         df_raw = load_data(uploaded_file=uploaded_file)
     except UnicodeDecodeError:
