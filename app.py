@@ -14,7 +14,6 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     classification_report,
-    confusion_matrix,
 )
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
@@ -26,7 +25,12 @@ from sklearn.feature_selection import mutual_info_classif
 # ---------------------------
 
 def basic_cleaning(df: pd.DataFrame) -> pd.DataFrame:
-    """Basic cleaning: drop rows with missing targets, fill other missing values."""
+    """
+    Basic cleaning:
+    - drop rows with missing targets
+    - coerce known numeric-like columns to numeric
+    - fill remaining missing values (median for numeric, mode for categorical)
+    """
     df = df.copy()
 
     # Drop rows where targets are missing
@@ -34,6 +38,12 @@ def basic_cleaning(df: pd.DataFrame) -> pd.DataFrame:
     existing_targets = [c for c in target_cols if c in df.columns]
     if existing_targets:
         df = df.dropna(subset=existing_targets)
+
+    # Coerce known numeric-like columns to numeric
+    numeric_like_cols = ["MP_Count_per_L", "Risk_Score"]
+    for col in numeric_like_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # Simple fill for remaining missing values
     num_cols = df.select_dtypes(include=["int64", "float64"]).columns.tolist()
