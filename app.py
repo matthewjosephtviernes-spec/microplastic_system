@@ -1,3 +1,9 @@
+# app.py
+# Streamlit app: Microplastic Risk Prediction (fixed)
+# Notes:
+# - Keep transformations inside sklearn Pipelines for leakage safety.
+# - EDA page shows transformations only for explanation.
+
 import numpy as np
 import pandas as pd
 
@@ -696,7 +702,6 @@ def main():
 
     if uploaded_file is not None:
         st.success("✅ CSV uploaded successfully. All pages will use this dataset.")
-        # Once the user uploads a dataset, hide the long intro text
         st.session_state["hide_intro"] = True
     else:
         st.info("Using default 'Microplastic.csv' in the app folder (if available).")
@@ -805,11 +810,9 @@ def main():
             """
             **Purpose of this page**
 
-            - To understand the **structure of the dataset** (rows, columns, and key variables).  
-            - To explore the **Risk_Score** variable, which is a numeric representation of microplastic risk.  
-            - To inspect how **Risk_Score** relates to **MP_Count_per_L** and **Risk_Level**.
-
-            This page corresponds to the **data understanding** phase of the study.
+            - Understand dataset shape and key variables.  
+            - Explore **Risk_Score** (distribution, outliers).  
+            - Inspect how **Risk_Score** relates to **MP_Count_per_L** and **Risk_Level**.
             """
         )
 
@@ -822,28 +825,11 @@ def main():
 
         with tab1:
             st.subheader("Raw Dataset (first 10 rows)")
-            st.markdown(
-                """
-                **Description**
-
-                - Shows the first 10 rows of the dataset.  
-                - Helps verify that the data was loaded correctly and fields are in the expected format.
-                """
-            )
             st.dataframe(df_raw.head(10))
             st.markdown(f"**Shape:** `{df_raw.shape[0]}` rows × `{df_raw.shape[1]}` columns")
 
         with tab2:
             st.subheader("Distribution of Risk_Score (Histogram & Boxplot)")
-            st.markdown(
-                """
-                **Interpretation guide**
-
-                - The **histogram** shows how Risk_Score values are distributed (e.g., skewed, symmetric).  
-                - The **boxplot** highlights potential **outliers** (extremely high or low risk scores).  
-                - A right-skewed distribution may indicate that **most sites are low risk**, with a few very high-risk sites.
-                """
-            )
             if "Risk_Score" in df_raw.columns:
                 st.pyplot(plot_hist_box(df_raw, "Risk_Score"))
             else:
@@ -851,16 +837,6 @@ def main():
 
         with tab3:
             st.subheader("Relationship between Risk_Score and MP_Count_per_L")
-            st.markdown(
-                """
-                **Interpretation guide**
-
-                - Each point represents one observation (sampling location or record).  
-                - If points generally trend upward (higher MP_Count_per_L → higher Risk_Score),  
-                  this supports the assumption that **microplastic concentration** drives risk.  
-                - A weak or noisy pattern may suggest that **other environmental factors** also influence risk.
-                """
-            )
             if "MP_Count_per_L" in df_raw.columns and "Risk_Score" in df_raw.columns:
                 st.pyplot(plot_scatter(df_raw, "MP_Count_per_L", "Risk_Score"))
             else:
@@ -868,15 +844,6 @@ def main():
 
         with tab4:
             st.subheader("Difference in Risk_Score by Risk_Level (Boxplot)")
-            st.markdown(
-                """
-                **Interpretation guide**
-
-                - Each box represents the distribution of Risk_Score within a given **Risk_Level** category.  
-                - Ideally, the median Risk_Score should **increase** from Low → Moderate → High → Very High.  
-                - If there is strong overlap between boxes, it may indicate that the thresholds between risk levels are not very distinct.
-                """
-            )
             if "Risk_Level" in df_raw.columns and "Risk_Score" in df_raw.columns:
                 st.pyplot(
                     plot_box_by_category_readable(
@@ -896,14 +863,8 @@ def main():
         st.header("Task 2: Preprocessing (EDA view)")
         st.markdown(
             """
-            **Purpose of this page**
-
-            - To illustrate the main **preprocessing operations** applied to the data before modeling:  
-              handling missing values, capping outliers, transforming skewed variables, and scaling.  
-            - These steps improve the **stability and robustness** of the predictive models.
-
-            Note: In the actual modeling pipeline, these transformations are applied inside a **scikit-learn Pipeline**
-            to avoid data leakage. Here, we show them for **exploratory and explanatory purposes**.
+            - Handle missing values, cap IQR outliers, transform skew, scale numerics.  
+            - In modeling, these are inside Pipelines for leakage safety; here it's just to illustrate.
             """
         )
 
@@ -915,17 +876,6 @@ def main():
         tab1, tab2 = st.tabs(["Descriptive Stats", "Skewness & Notes"])
 
         with tab1:
-            st.subheader("Descriptive Statistics Before and After Cleaning")
-            st.markdown(
-                """
-                This tab compares **summary statistics** of key numeric variables:
-
-                - **Raw data**: may contain missing values, strong outliers, and skewed distributions.  
-                - **Cleaned data**: after imputation, outlier capping, transformation, and scaling.
-
-                This comparison helps justify why preprocessing is necessary for more reliable modeling.
-                """
-            )
             numeric_present = [c for c in NUMERIC_COLS if c in df_raw.columns]
             if numeric_present:
                 st.subheader("Descriptive Stats (Raw)")
@@ -937,39 +887,15 @@ def main():
 
         with tab2:
             st.subheader("Skewness (Before Transform) and Notes")
-            st.markdown(
-                """
-                - **Skewness** measures how asymmetric a distribution is.  
-                - Highly skewed variables can negatively affect models like Logistic Regression.  
-                - Columns with high absolute skewness are transformed using **log1p** to make them more normal-like.
-
-                This improves numerical stability and often leads to better predictive performance.
-                """
-            )
             st.write(skewness)
             if len(skewed_cols) > 0:
                 st.write("Skewed columns transformed (log1p):")
                 st.write(skewed_cols)
-
-            st.info(
-                "In the actual modeling stages, preprocessing is embedded inside a Pipeline and applied "
-                "fold-by-fold to avoid data leakage. The view here is for interpretation only."
-            )
+            st.info("In modeling, preprocessing is inside Pipelines (no leakage).")
 
     # -------------------- PAGE 3 --------------------
     elif page == "Feature Selection & Relevance (Task 3 & 6)":
         st.header("Tasks 3 & 6: Feature Selection / Relevance (Model-based)")
-        st.markdown(
-            """
-            **Purpose of this page**
-
-            - To identify which features are most important in predicting **Risk_Type** and **Risk_Level**.  
-            - Feature importances are derived from a **Random Forest** model trained on the preprocessed data.  
-            - This supports **feature selection** and **interpretation of risk drivers** in the study.
-
-            The results here can be used to discuss which environmental factors contribute most to microplastic risk.
-            """
-        )
 
         tab_rt, tab_rl = st.tabs(["Risk_Type (RF importance)", "Risk_Level (RF importance)"])
 
@@ -993,12 +919,6 @@ def main():
             top = importances.head(25)
 
             st.subheader("Top 25 feature importances")
-            st.markdown(
-                """
-                The table and plot below show the **relative contribution** of each transformed input feature
-                to the Random Forest model. Higher values indicate stronger influence on the prediction.
-                """
-            )
             st.dataframe(top.rename("importance"))
 
             fig, ax = plt.subplots(figsize=(10, 6))
@@ -1007,32 +927,13 @@ def main():
             plt.tight_layout()
             st.pyplot(fig)
 
-            st.info(
-                f"For the target **{target_col}**, features at the top of the chart can be interpreted as "
-                "the most influential variables driving the predicted risk categories."
-            )
-
         with tab_rt:
-            st.markdown(
-                """
-                **Risk_Type feature importance**
-
-                This tab shows which variables most strongly influence the classification of **Risk_Type**.
-                """
-            )
             if TARGET_RISK_TYPE not in df_raw.columns:
                 st.warning("Risk_Type column not found; cannot compute importance.")
             else:
                 rf_importance(TARGET_RISK_TYPE)
 
         with tab_rl:
-            st.markdown(
-                """
-                **Risk_Level feature importance**
-
-                This tab shows which variables are most informative for predicting **Risk_Level**.
-                """
-            )
             if TARGET_RISK_LEVEL not in df_raw.columns:
                 st.warning("Risk_Level column not found; cannot compute importance.")
             else:
@@ -1041,29 +942,9 @@ def main():
     # -------------------- PAGE 4 --------------------
     elif page == "Classification Modeling (Tasks 4, 5 & 7)":
         st.header("Classification Modeling (Tasks 4, 5 & 7)")
-        st.markdown(
-            """
-            **Purpose of this page**
-
-            - To train and evaluate multiple classification models (Logistic Regression, Random Forest, Gradient Boosting)  
-              for predicting **Risk_Type** and **Risk_Level**.  
-            - To compare models using **Accuracy, Precision, Recall, and F1-score (weighted)**.
-
-            This corresponds to the **modeling and initial evaluation** steps in the predictive framework.
-            """
-        )
-
         tab1, tab2 = st.tabs(["Risk_Type", "Risk_Level"])
 
         with tab1:
-            st.markdown(
-                """
-                ### Modeling for Risk_Type
-
-                Here, we evaluate different classifiers on their ability to correctly predict the **Risk_Type**
-                category for each record, based on microplastic and environmental features.
-                """
-            )
             if TARGET_RISK_TYPE not in df_raw.columns:
                 st.warning("Risk_Type column not found; cannot train models for Risk-Type.")
             else:
@@ -1072,17 +953,6 @@ def main():
                     _, metrics_rt, split_info_rt, split_note_rt = train_holdout_models_cached(
                         df_raw, TARGET_RISK_TYPE, test_size, drop_cols_for_model, fast_mode, use_smote=False
                     )
-                st.markdown(
-                    """
-                    **How to read this table**
-
-                    - Each row corresponds to a different model.  
-                    - **Accuracy**: Percentage of correct predictions.  
-                    - **Precision (weighted)**: How reliable the positive predictions are, averaged across classes.  
-                    - **Recall (weighted)**: How well the model recovers the true instances in each class.  
-                    - **F1-score (weighted)**: Harmonic mean of precision and recall, accounting for class imbalance.
-                    """
-                )
                 st.dataframe(metrics_rt.round(3))
                 st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type)"))
                 st.info(split_note_rt)
@@ -1093,60 +963,25 @@ def main():
 
                 # --- Sample predictions (for explanation/demo) ---
                 with st.expander("Show sample classification results for Risk_Type (True vs Predicted)"):
-                    st.markdown(
-                        """
-                        This table shows **example classification outputs** of the selected model:
-
-                        - Each row corresponds to one record in the dataset.  
-                        - `True_Risk_Type` = actual label from the dataset.  
-                        - `Pred_Risk_Type` = label predicted by the best-performing model.  
-
-                        This helps demonstrate that the models are not only evaluated by metrics,
-                        but are actually performing **per-record categorical predictions**.
-                        """
-                    )
-
-                    # Use the same features/target definition as modeling
                     X_rt, y_rt = get_Xy_for_target(df_raw, TARGET_RISK_TYPE, drop_cols_for_model)
-
-                    # Rebuild models and pick the best one based on F1-score (weighted)
                     models = build_models_fast(fast_mode)
-                    if "F1-score (weighted)" in metrics_rt.columns:
-                        best_model_name = metrics_rt["F1-score (weighted)"].idxmax()
-                    else:
-                        best_model_name = metrics_rt["Accuracy"].idxmax()
+                    best_model_name = (
+                        metrics_rt["F1-score (weighted)"].idxmax()
+                        if "F1-score (weighted)" in metrics_rt.columns
+                        else metrics_rt["Accuracy"].idxmax()
+                    )
                     best_model = models[best_model_name]
-
                     st.info(f"Best model (based on F1-score for Risk_Type): **{best_model_name}**")
-
-                    # Build pipeline and fit on the full data (for demo of predictions)
                     preprocessor = build_preprocess_pipeline_cached(df_raw, drop_cols_for_model)
-                    demo_pipe = Pipeline(steps=[
-                        ("prep", preprocessor),
-                        ("model", best_model),
-                    ])
+                    demo_pipe = Pipeline(steps=[("prep", preprocessor), ("model", best_model)])
                     demo_pipe.fit(X_rt, y_rt)
-
-                    # Predict on the full dataset (demo only)
                     y_pred_all = demo_pipe.predict(X_rt)
-
-                    # Build a small table: some features + true & predicted labels
                     demo_df = X_rt.copy()
                     demo_df["True_Risk_Type"] = y_rt
                     demo_df["Pred_Risk_Type"] = y_pred_all
-
-                    # Limit to first 20 rows for display
                     st.dataframe(demo_df.head(20))
 
         with tab2:
-            st.markdown(
-                """
-                ### Modeling for Risk_Level
-
-                This tab evaluates how well the models can predict the **Risk_Level** category.
-                The interpretation of metrics is similar to the Risk_Type tab.
-                """
-            )
             if TARGET_RISK_LEVEL not in df_raw.columns:
                 st.warning("Risk_Level column not found; cannot train models for Risk-Level.")
             else:
@@ -1167,28 +1002,14 @@ def main():
         st.markdown(
             f"""
             - Current modeling drop columns: **{', '.join(drop_cols_for_model) if drop_cols_for_model else 'None'}**  
-            - If the page is slow, keep **Drop Location & Author** ON and keep **Fast Mode** ON.  
-            - For reporting, you can highlight the **best model per target** based on F1-score (weighted).
+            - If slow, keep **Drop Location & Author** ON and **Fast Mode** ON.  
+            - Report best model per target using **F1-score (weighted)**.
             """
         )
 
     # -------------------- PAGE 5 --------------------
     elif page == "Cross Validation (K-Fold)":
         st.header("Cross Validation (K-Fold) for Classification Model")
-
-        st.markdown(
-            """
-            **Purpose of this page**
-
-            - To validate the **Logistic Regression** model for **Risk_Type** using **K-Fold cross validation**.  
-            - Instead of relying on a single train-test split, the data is split into several folds and the model is
-              trained and tested multiple times.  
-            - This provides a more **robust and stable estimate** of model performance.
-
-            Here, the target is fixed to **Risk_Type**, and the model is **Logistic Regression** as a baseline classifier.
-            """
-        )
-
         target = TARGET_RISK_TYPE
         model_name = "Logistic Regression"
         st.info(f"Target fixed to **{target}** and model fixed to **{model_name}** for validation.")
@@ -1199,8 +1020,7 @@ def main():
         max_rows = 500
         if len(df_raw) > max_rows:
             st.warning(
-                f"Dataset has {len(df_raw)} rows. For stable CV in limited resources, "
-                f"we sample {max_rows} rows for cross-validation."
+                f"Dataset has {len(df_raw)} rows. Sampling {max_rows} rows for cross-validation."
             )
             df_cv = df_raw.sample(max_rows, random_state=42).reset_index(drop=True)
         else:
@@ -1211,12 +1031,6 @@ def main():
         colA, colB = st.columns([1, 2])
         with colA:
             st.subheader("Risk_Type distribution (after rare-class merge)")
-            st.markdown(
-                """
-                Before running cross validation, we inspect the class distribution.  
-                Rare classes are merged under the label **'Other'** to avoid instability in folds.
-                """
-            )
             if target in df_cv.columns:
                 y_preview = merge_rare_classes(df_cv[target].dropna(), min_count=2, other_label="Other")
                 st.write(y_preview.value_counts())
@@ -1239,33 +1053,12 @@ def main():
                         st.info(cv_note)
                         st.subheader("CV Summary (mean ± std)")
                         st.dataframe(summary_df.round(4))
-
-                        st.markdown(
-                            """
-                            **Interpretation**
-
-                            - Each metric is averaged across all folds, with its standard deviation.  
-                            - Lower standard deviation indicates **more stable performance** across different splits.  
-                            - This validates that the model is not only performing well on one split, but is **consistently reliable**.
-                            """
-                        )
                     except Exception as e:
                         st.error(f"CV failed: {e}")
 
     # -------------------- PAGE 6 --------------------
     elif page == "SMOTE & Hyperparameter Tuning (Risk_Type)":
         st.header("Address Class Imbalance & Tune Logistic Regression (Risk-Type)")
-        st.markdown(
-            """
-            **Purpose of this page**
-
-            - To address **class imbalance** in the **Risk_Type** target using **SMOTE** (Synthetic Minority Oversampling Technique).  
-            - To improve the Logistic Regression model through **hyperparameter tuning** (searching for the best C value).  
-            - To compare **base models vs tuned model** to show whether tuning and resampling improve performance.
-
-            This corresponds to the **model refinement / optimization** step in the framework.
-            """
-        )
 
         if TARGET_RISK_TYPE not in df_raw.columns:
             st.warning("Risk_Type column not found; cannot run SMOTE or tuning.")
@@ -1275,13 +1068,6 @@ def main():
 
         with tab1:
             st.subheader("Class Distribution of Risk-Type (after rare-class merge)")
-            st.markdown(
-                """
-                This view highlights the **imbalance** in Risk_Type classes.  
-                If some classes have very few samples, models can become biased toward majority classes.
-                This justifies the use of **SMOTE** and **weighted metrics**.
-                """
-            )
             y_preview = merge_rare_classes(df_raw[TARGET_RISK_TYPE].dropna(), min_count=2, other_label="Other")
             st.write(y_preview.value_counts())
 
@@ -1291,27 +1077,12 @@ def main():
                 )
 
             st.subheader("Base Models Performance (Risk-Type)")
-            st.markdown(
-                """
-                These are the performances of the standard models **without** any SMOTE or hyperparameter tuning.
-                They serve as **baselines** for comparison with the tuned model.
-                """
-            )
             st.dataframe(base_metrics_rt.round(3))
             st.pyplot(plot_metrics_bar(base_metrics_rt, "(Risk-Type – Base)"))
             st.info(split_note_base)
 
         with tab2:
             st.subheader("SMOTE + Hyperparameter Tuning (LogReg)")
-            st.markdown(
-                """
-                In this tab:
-
-                - SMOTE is applied on the training data to **balance the classes** (if feasible).  
-                - Logistic Regression's regularization parameter **C** is tuned via GridSearchCV.  
-                - The goal is to maximize **F1-score (weighted)** on the validation folds.
-                """
-            )
             if not IMBLEARN_OK:
                 st.error("imbalanced-learn is required. Install: pip install imbalanced-learn")
                 st.stop()
@@ -1330,33 +1101,12 @@ def main():
 
             combined = pd.concat([base_metrics_rt, tuned_metrics])
             st.subheader("Comparison: Tuned Logistic Regression vs Base Models")
-            st.markdown(
-                """
-                This comparison allows you to answer questions such as:
-
-                - Does SMOTE + tuning improve the **F1-score** compared to untuned models?  
-                - How does the tuned Logistic Regression compare to Random Forest and Gradient Boosting?  
-
-                These results support the conclusion about which model is **most suitable** for predicting Risk_Type.
-                """
-            )
             st.dataframe(combined.round(3))
             st.pyplot(plot_metrics_bar(combined, "(Risk-Type – Base vs Tuned)"))
 
     # -------------------- PAGE 7 --------------------
     elif page == "Polymer Type Distribution":
         st.header("Polymer Type Distribution")
-        st.markdown(
-            """
-            **Purpose of this page**
-
-            - To explore which **polymer types** are most frequently observed in the microplastic samples.  
-            - This supports the environmental interpretation of the pollution sources (e.g., packaging, textiles, fishing gear).
-
-            The distribution of polymer types can be discussed in relation to **local activities** and **potential mitigation strategies**.
-            """
-        )
-
         df = handle_missing_values(df_raw)
 
         if "Polymer_Type" in df.columns:
@@ -1368,22 +1118,10 @@ def main():
 
             with tabA:
                 st.subheader("Value Counts of Polymer_Type")
-                st.markdown(
-                    """
-                    This table lists how many times each polymer type appears in the dataset.
-                    It provides a detailed quantitative view of polymer composition.
-                    """
-                )
                 st.dataframe(vc.rename("count"))
 
             with tabB:
                 st.subheader("Bar Plot of Polymer_Type Distribution (Readable)")
-                st.markdown(
-                    """
-                    - This bar chart aggregates the most frequent polymer types and groups the rest under **'Other'**.  
-                    - It provides a clearer, more readable visualization compared to a chart with too many small categories.
-                    """
-                )
                 top_n = st.slider("Show Top N polymer types", min_value=5, max_value=30, value=15, step=1)
                 fig, _ = plot_categorical_topn_bar(
                     polymer,
@@ -1399,16 +1137,6 @@ def main():
     # -------------------- PAGE 8 (LAST) --------------------
     elif page == "Visualization Dashboard":
         st.header("Visualization Dashboard")
-        st.markdown(
-            """
-            **Purpose of this page**
-
-            - To provide a **visual summary** of how risk classes, microplastic metrics, and environmental factors interact.  
-            - These visualizations support the **discussion and conclusion** sections of the thesis.
-
-            Each tab focuses on a specific aspect of the data.
-            """
-        )
 
         tab1, tab2, tab3, tab4 = st.tabs([
             "Risk Class Distribution",
@@ -1420,14 +1148,6 @@ def main():
         # ---- Tab 1: Risk Class Distribution ----
         with tab1:
             st.subheader("Risk_Type and Risk_Level Distribution")
-            st.markdown(
-                """
-                This tab shows how many records fall into each **Risk_Type** and **Risk_Level** category.
-
-                - Strong imbalance (one class dominating) highlights the need for **SMOTE** and **weighted metrics**.  
-                - It also helps describe the risk profile of the study area (e.g., mostly low risk vs many high-risk sites).
-                """
-            )
 
             col1, col2 = st.columns(2)
 
@@ -1468,23 +1188,6 @@ def main():
         # ---- Tab 2: Correlations ----
         with tab2:
             st.subheader("Correlation Heatmap (Numeric Features)")
-            st.markdown(
-                """
-                This tab explores **pairwise correlations** between numeric features such as:
-
-                - MP_Count_per_L  
-                - Risk_Score  
-                - Microplastic_Size_mm  
-                - Density, Latitude, Longitude, etc.
-
-                **Interpretation:**
-
-                - Positive correlation (red) means variables tend to increase together.  
-                - Negative correlation (blue) means when one increases, the other decreases.  
-                - Strong correlation between **MP_Count_per_L** and **Risk_Score** would support the assumption that
-                  higher microplastic counts lead to higher risk.
-                """
-            )
             numeric_present = [c for c in NUMERIC_COLS if c in df_raw.columns]
             if numeric_present:
                 num_df = df_raw[numeric_present].apply(pd.to_numeric, errors="coerce")
@@ -1499,11 +1202,6 @@ def main():
                 st.info("No numeric columns found to compute correlations.")
 
             st.markdown("### Optional Pairwise Relationship")
-            st.markdown(
-                """
-                You can also explore specific relationships between two numeric variables using the scatter plot below.
-                """
-            )
             if len(numeric_present) >= 2:
                 col_x, col_y = st.columns(2)
                 with col_x:
@@ -1517,16 +1215,6 @@ def main():
         # ---- Tab 3: Spatial Patterns ----
         with tab3:
             st.subheader("Spatial Distribution of Sampling Sites")
-            st.markdown(
-                """
-                This tab visualizes sampling locations using **Latitude** and **Longitude**.
-
-                - Points may be colored by **Risk_Level** or **Risk_Type**, if available.  
-                - Spatial clustering of high-risk points can be linked to **industrial zones, river mouths, or urban areas**.
-
-                This supports spatial interpretation of microplastic risk.
-                """
-            )
 
             if "Latitude" in df_raw.columns and "Longitude" in df_raw.columns:
                 lat = pd.to_numeric(df_raw["Latitude"], errors="coerce")
@@ -1571,28 +1259,9 @@ def main():
         # ---- Tab 4: Risk vs Factors ----
         with tab4:
             st.subheader("Risk vs Microplastic and Environmental Factors")
-            st.markdown(
-                """
-                This tab links risk indicators to individual factors such as:
-
-                - Microplastic count per liter (**MP_Count_per_L**)  
-                - Microplastic size (**Microplastic_Size_mm**)  
-                - **Industrial_Activity** categories
-
-                These plots support your **discussion of how specific factors relate to risk levels**.
-                """
-            )
 
             if "MP_Count_per_L" in df_raw.columns and TARGET_RISK_LEVEL in df_raw.columns:
                 st.markdown("#### MP_Count_per_L by Risk_Level")
-                st.markdown(
-                    """
-                    **Interpretation:**
-
-                    - Higher distributions of MP_Count_per_L in higher Risk_Level categories  
-                      support the conclusion that microplastic load contributes to risk severity.
-                    """
-                )
                 st.pyplot(
                     plot_box_by_category_readable(
                         df_raw,
@@ -1610,14 +1279,6 @@ def main():
 
             if "Microplastic_Size_mm" in df_raw.columns and TARGET_RISK_TYPE in df_raw.columns:
                 st.markdown("#### Microplastic_Size_mm by Risk_Type")
-                st.markdown(
-                    """
-                    **Interpretation:**
-
-                    - Shows whether certain Risk_Type categories are associated with smaller or larger microplastic sizes.  
-                    - Can be used to discuss the potential role of **fragmentation** or **source types**.
-                    """
-                )
                 st.pyplot(
                     plot_box_by_category_readable(
                         df_raw,
@@ -1635,15 +1296,6 @@ def main():
 
             if "Risk_Score" in df_raw.columns and "Industrial_Activity" in df_raw.columns:
                 st.markdown("#### Risk_Score by Industrial_Activity")
-                st.markdown(
-                    """
-                    **Interpretation:**
-
-                    - Compares Risk_Score across different industrial activity levels.  
-                    - Higher median Risk_Score in areas with more intense industrial activity
-                      supports the link between **industrialization and microplastic pollution risk**.
-                    """
-                )
                 st.pyplot(
                     plot_box_by_category_readable(
                         df_raw,
@@ -1656,13 +1308,6 @@ def main():
                 )
             else:
                 st.info("Need columns 'Risk_Score' and 'Industrial_Activity' for this plot.")
-
-            st.markdown(
-                """
-                Overall, the plots in this tab can be cited in the **Findings** and **Discussion** sections
-                to support claims about which factors are most strongly associated with microplastic risk.
-                """
-            )
 
 
 if __name__ == "__main__":
