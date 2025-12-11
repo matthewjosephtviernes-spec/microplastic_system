@@ -1,4 +1,4 @@
-# file: streamlit_app.py
+# streamlit_app.py  — full app with robust file loader to avoid UnicodeDecodeError
 import os
 import io
 import warnings
@@ -32,10 +32,17 @@ try:
 except Exception:
     HAS_IMB = False
 
-warnings.filterwarnings("ignore", category=UserWarning)
-plt.switch_backend("Agg")  # non-interactive backend (Streamlit-friendly)
+# Encoding detection
+try:
+    from charset_normalizer import from_bytes as detect_encoding
+    HAS_CHARDET = True
+except Exception:
+    HAS_CHARDET = False
 
-# -------------------- Config & helpers --------------------
+warnings.filterwarnings("ignore", category=UserWarning)
+plt.switch_backend("Agg")
+
+# -------------------- helpers --------------------
 st.set_page_config(page_title="Risk Analytics System", layout="wide")
 
 @dataclass
@@ -75,8 +82,8 @@ def build_preprocessor(df: pd.DataFrame, cfg: ColumnConfig) -> Tuple[ColumnTrans
     num_cols = [c for c in kept if pd.api.types.is_numeric_dtype(df[c])]
     cat_cols = [c for c in kept if c not in num_cols]
     num = Pipeline([("impute", SimpleImputer(strategy="median")),
-                    ("power", PowerTransformer(method="yeo-johnson", standardize=False)),  # why: de-skew
-                    ("scale", RobustScaler(with_centering=True))])                          # why: robust to outliers
+                    ("power", PowerTransformer(method="yeo-johnson", standardize=False)),
+                    ("scale", RobustScaler(with_centering=True))])
     cat = Pipeline([("impute", SimpleImputer(strategy="most_frequent")),
                     ("ohe", OneHotEncoder(handle_unknown="ignore", sparse=False))])
     pre = ColumnTransformer([("num", num, num_cols), ("cat", cat, cat_cols)], remainder="drop")
@@ -96,7 +103,57 @@ def summarize_metrics(y_true, y_pred, proba=None) -> Dict[str, float]:
 def df_head_markdown(df: pd.DataFrame, n: int = 5) -> str:
     return df.head(n).to_markdown(index=False)
 
-# -------------------- Demo data --------------------
+# -------------------- robust loader --------------------
+@st.cache_data(show_spinner=False)
+def load_uploaded(file: st.runtime.uploaded_file_manager.UploadedFile) -> pd.DataFrame:
+    """
+    Robust reader:
+      - Detects encoding (charset-normalizer).
+      - Tries sep=None (sniff) with engine='python'.
+      - Fallbacks to latin-1/cp1252 with errors='replace'.
+      - If Excel-like, uses read_excel.
+    """
+    name = file.name.lower()
+
+    # Excel?
+    if name.endswith((".xlsx", ".xls")):
+        file.seek(0)
+        df = pd.read_excel(file, engine="openpyxl")
+        return sanitize_columns(df)
+
+    # Read raw bytes (so we can detect encoding)
+    file.seek(0)
+    raw = file.read()
+
+    # Try to detect encoding
+    encoding = None
+    if HAS_CHARDET:
+        try:
+            best = detect_encoding(raw).best()
+            if best:
+                encoding = best.encoding
+        except Exception:
+            encoding = None
+
+    # Try candidates in order
+    candidates = [encoding, "utf-8-sig", "utf-8", "cp1252", "latin-1"]
+    last_err = None
+    for enc in [e for e in candidates if e]:
+        try:
+            df = pd.read_csv(io.BytesIO(raw), encoding=enc, sep=None, engine="python")  # sep=None -> sniff delimiter
+            return sanitize_columns(df)
+        except Exception as e:
+            last_err = e
+            continue
+
+    # Final fallback: be permissive with replacement chars
+    try:
+        df = pd.read_csv(io.BytesIO(raw), encoding="latin-1", sep=None, engine="python", on_bad_lines="skip", errors="replace")
+        return sanitize_columns(df)
+    except Exception as e:
+        raise RuntimeError(f"Could not read file; last error: {last_err or e}") from e
+
+# -------------------- demo data --------------------
 def make_demo(n: int = 1200, seed: int = 42) -> pd.DataFrame:
     rng = np.random.RandomState(seed)
     level = rng.choice(["Low","Medium","High"], size=n, p=[0.5,0.35,0.15])
@@ -113,13 +170,6 @@ def make_demo(n: int = 1200, seed: int = 42) -> pd.DataFrame:
         "Polymer_Type": polymer,
         "Risk_Type": pd.Series(risk_type).astype("category"),
     }))
-
-# -------------------- Caching --------------------
-@st.cache_data(show_spinner=False)
-def load_uploaded(file: st.runtime.uploaded_file_manager.UploadedFile) -> pd.DataFrame:
-    if file.name.lower().endswith(".parquet"):
-        return sanitize_columns(pd.read_parquet(file))
-    return sanitize_columns(pd.read_csv(file))
 
 @st.cache_data(show_spinner=False)
 def mutual_info_plot(pre: ColumnTransformer, X: pd.DataFrame, y: pd.Series):
@@ -149,18 +199,17 @@ st.title("Risk Analytics & Modeling")
 
 with st.sidebar:
     st.header("1) Data")
-    up = st.file_uploader("Upload CSV/Parquet", type=["csv","parquet"])
+    up = st.file_uploader("Upload CSV/Parquet/Excel", type=["csv","parquet","xlsx","xls"])
     use_demo = st.checkbox("Or use demo data", value=(up is None))
     st.header("2) Options")
     test_size = st.slider("Test size", 0.1, 0.4, 0.2, 0.05)
     seed = st.number_input("Random state", 0, 9999, 42, 1)
-    use_smote = st.checkbox("Address class imbalance with SMOTE", value=True and HAS_IMB,
-                            help="Requires imbalanced-learn. Auto-disabled if not installed.")
+    use_smote = st.checkbox("Address class imbalance with SMOTE", value=True and HAS_IMB)
     st.caption(f"SMOTE available: {'Yes' if HAS_IMB else 'No'}")
     st.header("3) Run")
     run = st.button("Run Pipeline", type="primary")
 
-# Load data
+# Load dataset
 if use_demo:
     df = make_demo()
     st.success(f"Loaded demo dataset • rows: {len(df)} • cols: {df.shape[1]}")
@@ -202,7 +251,6 @@ cfg = ColumnConfig(
     id_cols=id_cols,
     date_cols=date_cols,
 )
-
 if not cfg.target:
     st.warning("Select a **Target** column to continue.")
     st.stop()
@@ -248,10 +296,8 @@ with st.spinner("Preparing data..."):
     drop_cols = list(set(cfg.id_cols + cfg.date_cols + [cfg.target]))
     X = df.drop(columns=[c for c in drop_cols if c in df], errors="ignore")
     y = df[cfg.target].astype("category")
-    # Outlier capping
     num_all = [c for c in X.columns if pd.api.types.is_numeric_dtype(df[c])]
     X = cap_outliers_iqr(X, num_all)
-    # Preprocessor
     pre, _, _ = build_preprocessor(df.drop(columns=[cfg.target]), cfg)
 
 # Feature selection diagnostics
@@ -291,8 +337,7 @@ with st.spinner("Training models and evaluating..."):
     rows = []
     best_name, best_score, best_pipe = None, -1.0, None
     labels = np.unique(yte)
-    cm_imgs = []
-    roc_imgs = []
+    cm_imgs, roc_imgs = [], []
 
     for name, pipe in models.items():
         pipe.fit(Xtr, ytr)
@@ -306,7 +351,7 @@ with st.spinner("Training models and evaluating..."):
         met["model"] = name
         rows.append(met)
 
-        # Confusion Matrix plot buffer
+        # Confusion Matrix
         fig = plt.figure()
         cm = confusion_matrix(yte, yhat, labels=labels)
         plt.imshow(cm, interpolation="nearest")
@@ -336,13 +381,11 @@ leader = pd.DataFrame(rows).sort_values("f1_w", ascending=False)
 st.subheader("Model leaderboard (F1-weighted)")
 st.dataframe(leader, use_container_width=True)
 
-# Leaderboard bar
 fig = plt.figure()
 plt.bar(leader["model"], leader["f1_w"])
 plt.title("Model Comparison (F1-weighted)"); plt.xlabel("Model"); plt.ylabel("F1_weighted")
 st.pyplot(fig, clear_figure=True)
 
-# Show CM and ROC
 st.subheader("Confusion matrices")
 for name, buf in cm_imgs:
     st.image(buf, caption=name, use_column_width=True)
@@ -372,7 +415,6 @@ try:
     else:
         imp_df = None
 
-    # Permutation (subset) to augment, model-agnostic
     try:
         rng = np.random.RandomState(42)
         idx = rng.choice(np.arange(Xtr.shape[0]), size=min(1500, Xtr.shape[0]), replace=False)
@@ -397,43 +439,16 @@ try:
 except Exception as e:
     st.info(f"Could not compute feature relevance: {e}")
 
-# -------------------- Markdown summary (download) --------------------
+# -------------------- Summary download --------------------
 st.subheader("Summary report")
 summary_lines = [
     "# Risk Analytics & Modeling Summary",
     "",
-    "## Tasks Completed",
-    "- Encode categorical variables",
-    "- Perform feature scaling",
-    "- Address outliers",
-    "- Analyze the distribution of risk score",
-    "- Explore risk score vs. mp_count_per_l",
-    "- Investigate difference in risk score by risk level",
-    "- Transform skewed numerical columns",
-    "- Explore feature selection (variance + mutual information)",
-    "- Prepare/train/tune/evaluate models for Risk_Type",
-    "- Compare model performance",
-    "- Extract/analyze/visualize feature relevance",
-    "",
-    "## Columns",
-    f"- Target: `{cfg.target}`",
-    f"- Risk Score: `{cfg.risk_score}`",
-    f"- Risk Level: `{cfg.risk_level}`",
-    f"- mp_count_per_l: `{cfg.mp_count}`",
-    f"- Polymer Type: `{cfg.polymer}`",
-    "",
-    "## Class Distribution (train)",
-    class_dist.to_markdown(),
-    "",
     "## Leaderboard (F1-weighted)",
     leader.to_markdown(index=False),
     f"\n**Best model:** `{best_name}`",
-    "",
-    "## Data preview",
-    df_head_markdown(df, 5),
 ]
 summary_md = "\n".join(summary_lines)
 st.download_button("Download summary.md", data=summary_md.encode("utf-8"),
                    file_name="summary.md", mime="text/markdown")
 st.success("Done.")
-
