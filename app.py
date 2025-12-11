@@ -681,18 +681,12 @@ def plot_categorical_topn_bar(
 # -------------------------------------------------------
 def main():
     st.title("Microplastic Risk Prediction – Streamlit App")
-    st.markdown(
-        """
-        This app demonstrates the analysis and modeling workflow for predicting **Risk_Type**
-        and **Risk_Level** using microplastic and environmental features.
 
-        - The flow follows a typical **data mining / predictive modeling pipeline**:  
-          **Data understanding → Preprocessing → Feature relevance → Modeling → Validation → Optimization → Visualization.**
-        - All preprocessing and modeling steps are implemented in a **leakage-safe** manner using scikit-learn Pipelines.
-        """
-    )
+    # Track whether we should still show the intro text
+    if "hide_intro" not in st.session_state:
+        st.session_state["hide_intro"] = False
 
-    # 👉 DATA UPLOAD SA TAAS SA SIDEBAR (BEFORE NAVIGATION)
+    # 👉 DATA UPLOAD AT TOP OF SIDEBAR
     st.sidebar.subheader("Data source")
     uploaded_file = st.sidebar.file_uploader(
         "Upload Microplastic CSV",
@@ -702,8 +696,24 @@ def main():
 
     if uploaded_file is not None:
         st.success("✅ CSV uploaded successfully. All pages will use this dataset.")
+        # Once the user uploads a dataset, hide the long intro text
+        st.session_state["hide_intro"] = True
     else:
         st.info("Using default 'Microplastic.csv' in the app folder (if available).")
+
+    # Show intro text ONLY if not yet hidden
+    if not st.session_state["hide_intro"]:
+        st.markdown(
+            """
+            This app demonstrates the analysis and modeling workflow for predicting **Risk_Type**
+            and **Risk_Level** using microplastic and environmental features.
+
+            The flow follows a typical **data mining / predictive modeling pipeline**:  
+            **Data understanding → Preprocessing → Feature relevance → Modeling → Validation → Optimization → Visualization.**
+
+            All preprocessing and modeling steps are implemented in a **leakage-safe** manner using scikit-learn Pipelines.
+            """
+        )
 
     # =====================================================
     # Sidebar Navigation (COMPACT)
