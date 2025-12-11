@@ -1,21 +1,6 @@
-# file: pipeline_tasks.py
-"""
-All-in-one Risk Analytics Pipeline matching the requested task list.
-
-Quick demo:
-    python pipeline_tasks.py --demo --verbose
-
-Real data:
-    python pipeline_tasks.py --input data.csv --target Risk_Type \
-      --risk-score Risk_Score --risk-level Risk_Level --mp-count mp_count_per_l \
-      --polymer Polymer_Type --verbose
-"""
-
-from __future__ import annotations
-
-import argparse
+# file: streamlit_app.py
 import os
-import sys
+import io
 import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -23,22 +8,23 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import streamlit as st
 
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, RobustScaler, PowerTransformer
-from sklearn.feature_selection import VarianceThreshold, mutual_info_classif
 from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
 from sklearn.metrics import (
     accuracy_score, precision_recall_fscore_support, roc_auc_score,
     classification_report, confusion_matrix, RocCurveDisplay
 )
+from sklearn.feature_selection import VarianceThreshold, mutual_info_classif
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
 
-# Optional: class imbalance
+# Optional SMOTE
 try:
     from imblearn.pipeline import Pipeline as ImbPipeline  # type: ignore
     from imblearn.over_sampling import SMOTE  # type: ignore
@@ -47,53 +33,11 @@ except Exception:
     HAS_IMB = False
 
 warnings.filterwarnings("ignore", category=UserWarning)
-plt.switch_backend("Agg")  # headless saves
+plt.switch_backend("Agg")  # non-interactive backend (Streamlit-friendly)
 
-# ---------------- Utilities ----------------
-def log(msg: str, on: bool) -> None:
-    if on:
-        print(msg, flush=True)
+# -------------------- Config & helpers --------------------
+st.set_page_config(page_title="Risk Analytics System", layout="wide")
 
-def ensure_dirs() -> Dict[str, str]:
-    base = "outputs"
-    plots = os.path.join(base, "plots")
-    os.makedirs(plots, exist_ok=True)
-    return {"base": base, "plots": plots}
-
-def savefig(path: str) -> None:
-    plt.tight_layout()
-    plt.savefig(path, dpi=160)
-    plt.close()
-
-def is_binary(y: pd.Series) -> bool:
-    return y.nunique(dropna=True) == 2
-
-def sanitize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = [c.strip().replace(" ", "_") for c in df.columns]
-    return df
-
-# ---------------- Demo data ----------------
-def make_demo_csv(path: str, n: int = 1500, seed: int = 42) -> str:
-    rng = np.random.RandomState(seed)
-    risk_level = rng.choice(["Low","Medium","High"], size=n, p=[0.5,0.35,0.15])
-    polymer = rng.choice(["PE","PP","PS","PET","PVC"], size=n)
-    mp = np.clip(rng.normal(100, 40, size=n) + (risk_level == "High")*50 + (risk_level == "Medium")*20, 5, None)
-    score = np.clip(0.02*mp + rng.normal(0, 1.5, size=n) + (risk_level == "High")*3 + (risk_level == "Medium")*1.2, 0, None)
-    logits = -1.0 + 0.15*score + (polymer == "PS")*0.5 + (risk_level == "High")*0.7
-    prob = 1/(1+np.exp(-logits))
-    risk_type = np.where(rng.uniform(size=n) < prob, "At_Risk", "Safe")
-    df = pd.DataFrame({
-        "Risk_Score": score,
-        "Risk_Level": risk_level,
-        "mp_count_per_l": mp,
-        "Polymer_Type": polymer,
-        "Risk_Type": pd.Series(risk_type).astype("category"),
-    })
-    df.to_csv(path, index=False)
-    return path
-
-# ---------------- Column config ----------------
 @dataclass
 class ColumnConfig:
     target: Optional[str]
@@ -104,53 +48,14 @@ class ColumnConfig:
     id_cols: List[str]
     date_cols: List[str]
 
-def detect_columns(df: pd.DataFrame, args: argparse.Namespace) -> ColumnConfig:
-    cols = set(df.columns)
+def sanitize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [c.strip().replace(" ", "_") for c in df.columns]
+    return df
 
-    def pick(name: Optional[str], candidates: List[str]) -> Optional[str]:
-        if name and name in cols:
-            return name
-        for c in candidates:
-            if c in cols:
-                return c
-        return None
+def is_binary(y: pd.Series) -> bool:
+    return y.nunique(dropna=True) == 2
 
-    target = pick(args.target, ["Risk_Type","risk_type","RISK_TYPE"])
-    risk_score = pick(args.risk_score, ["Risk_Score","risk_score","score"])
-    risk_level = pick(args.risk_level, ["Risk_Level","risk_level","level"])
-    mp_count = pick(args.mp_count, ["mp_count_per_l","mp_count","MP_Count","mp"])
-    polymer = pick(args.polymer, ["Polymer_Type","polymer_type","polymer"])
-    id_cols = [c for c in (args.id_cols or "").split(",") if c in cols] if args.id_cols else []
-    date_cols = [c for c in (args.date_cols or "").split(",") if c in cols] if args.date_cols else []
-    return ColumnConfig(target, risk_score, risk_level, mp_count, polymer, id_cols, date_cols)
-
-# ---------------- EDA ----------------
-def eda_plots(df: pd.DataFrame, cfg: ColumnConfig, outdir: str) -> Dict[str, Optional[str]]:
-    paths: Dict[str, Optional[str]] = {"risk_dist": None, "risk_by_level": None, "risk_vs_mp": None, "polymer_dist": None}
-    if cfg.risk_score and cfg.risk_score in df:
-        plt.figure(); plt.hist(df[cfg.risk_score].dropna(), bins=30)
-        plt.title("Risk Score Distribution"); plt.xlabel(cfg.risk_score); plt.ylabel("Count")
-        p = os.path.join(outdir, "risk_score_distribution.png"); savefig(p); paths["risk_dist"] = p
-    if cfg.risk_score and cfg.risk_level and cfg.risk_score in df and cfg.risk_level in df:
-        levels = df[cfg.risk_level].dropna().unique()
-        data = [df.loc[df[cfg.risk_level]==lvl, cfg.risk_score].dropna().values for lvl in levels]
-        if len(data):
-            plt.figure(); plt.boxplot(data, labels=[str(x) for x in levels], showfliers=True)
-            plt.title("Risk Score by Risk Level"); plt.xlabel("Risk Level"); plt.ylabel(cfg.risk_score)
-            p = os.path.join(outdir, "risk_score_by_level.png"); savefig(p); paths["risk_by_level"] = p
-    if cfg.risk_score and cfg.mp_count and cfg.risk_score in df and cfg.mp_count in df:
-        m = df[[cfg.mp_count, cfg.risk_score]].dropna()
-        plt.figure(); plt.scatter(m[cfg.mp_count], m[cfg.risk_score], alpha=0.6)
-        plt.title("Risk Score vs mp_count_per_l"); plt.xlabel(cfg.mp_count); plt.ylabel(cfg.risk_score)
-        p = os.path.join(outdir, "risk_vs_mpcount.png"); savefig(p); paths["risk_vs_mp"] = p
-    if cfg.polymer and cfg.polymer in df:
-        counts = df[cfg.polymer].value_counts(dropna=False)
-        plt.figure(); counts.plot(kind="bar")
-        plt.title("Polymer Type Distribution"); plt.xlabel("Polymer Type"); plt.ylabel("Count")
-        p = os.path.join(outdir, "polymer_type_distribution.png"); savefig(p); paths["polymer_dist"] = p
-    return paths
-
-# ---------------- Preprocessing ----------------
 def cap_outliers_iqr(X: pd.DataFrame, numeric_cols: List[str]) -> pd.DataFrame:
     X = X.copy()
     for c in numeric_cols:
@@ -165,43 +70,18 @@ def cap_outliers_iqr(X: pd.DataFrame, numeric_cols: List[str]) -> pd.DataFrame:
     return X
 
 def build_preprocessor(df: pd.DataFrame, cfg: ColumnConfig) -> Tuple[ColumnTransformer, List[str], List[str]]:
-    drop_cols = set((cfg.id_cols or []) + (cfg.date_cols or []))
+    drop_cols = set(cfg.id_cols + cfg.date_cols)
     kept = [c for c in df.columns if c not in drop_cols and c != (cfg.target or "")]
     num_cols = [c for c in kept if pd.api.types.is_numeric_dtype(df[c])]
     cat_cols = [c for c in kept if c not in num_cols]
     num = Pipeline([("impute", SimpleImputer(strategy="median")),
-                    ("power", PowerTransformer(method="yeo-johnson", standardize=False)),
-                    ("scale", RobustScaler(with_centering=True))])
+                    ("power", PowerTransformer(method="yeo-johnson", standardize=False)),  # why: de-skew
+                    ("scale", RobustScaler(with_centering=True))])                          # why: robust to outliers
     cat = Pipeline([("impute", SimpleImputer(strategy="most_frequent")),
                     ("ohe", OneHotEncoder(handle_unknown="ignore", sparse=False))])
     pre = ColumnTransformer([("num", num, num_cols), ("cat", cat, cat_cols)], remainder="drop")
     return pre, num_cols, cat_cols
 
-# ---------------- Feature selection (diag) ----------------
-def feature_selection_diag(X: pd.DataFrame, y: pd.Series, pre: ColumnTransformer, outdir: str) -> pd.DataFrame:
-    Xt = pre.fit_transform(X, y)
-    num_cols = pre.transformers_[0][2]
-    cat_cols = pre.transformers_[1][2]
-    ohe: OneHotEncoder = pre.named_transformers_["cat"].named_steps["ohe"]
-    cat_out = list(ohe.get_feature_names_out(cat_cols)) if len(cat_cols) else []
-    feat_names = list(num_cols) + cat_out
-
-    vt = VarianceThreshold(1e-4).fit(Xt)
-    low_var = [feat_names[i] for i, keep in enumerate(vt.get_support()) if not keep]
-
-    y_enc, _ = pd.factorize(y)
-    idx = np.random.RandomState(42).choice(np.arange(Xt.shape[0]), size=min(5000, Xt.shape[0]), replace=False)
-    mi = mutual_info_classif(Xt[idx], y_enc[idx], random_state=42, discrete_features=[False]*Xt.shape[1])
-    mi_df = pd.DataFrame({"feature": feat_names, "mi": mi}).sort_values("mi", ascending=False)
-
-    # Plot top-20 MI
-    top = mi_df.head(20)
-    plt.figure(); plt.barh(top["feature"][::-1], top["mi"][::-1]); plt.title("Top Mutual Information Features"); plt.xlabel("MI")
-    savefig(os.path.join(outdir, "feature_mi_top20.png"))
-
-    return pd.DataFrame({"feature": low_var, "reason": "low_variance"}), mi_df
-
-# ---------------- Modeling ----------------
 def summarize_metrics(y_true, y_pred, proba=None) -> Dict[str, float]:
     p, r, f1, _ = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
     out = {"accuracy": accuracy_score(y_true, y_pred), "precision_w": p, "recall_w": r, "f1_w": f1}
@@ -213,30 +93,207 @@ def summarize_metrics(y_true, y_pred, proba=None) -> Dict[str, float]:
         pass
     return out
 
-def build_models(pre: ColumnTransformer, use_smote: bool, seed: int) -> Dict[str, object]:
-    # Why: SMOTE inside pipeline prevents leakage
-    def wrap(est):
-        if use_smote and HAS_IMB:
-            return ImbPipeline([("pre", pre), ("smote", SMOTE(random_state=seed)), ("clf", est)])
-        return Pipeline([("pre", pre), ("clf", est)])
+def df_head_markdown(df: pd.DataFrame, n: int = 5) -> str:
+    return df.head(n).to_markdown(index=False)
 
-    models = {
-        "logreg": wrap(LogisticRegression(max_iter=200, solver="lbfgs")),
-        "rf": wrap(RandomForestClassifier(n_estimators=300, random_state=seed, n_jobs=-1)),
-    }
-    return models
+# -------------------- Demo data --------------------
+def make_demo(n: int = 1200, seed: int = 42) -> pd.DataFrame:
+    rng = np.random.RandomState(seed)
+    level = rng.choice(["Low","Medium","High"], size=n, p=[0.5,0.35,0.15])
+    polymer = rng.choice(["PE","PP","PS","PET","PVC"], size=n)
+    mp = np.clip(rng.normal(100, 40, size=n) + (level=="High")*50 + (level=="Medium")*20, 5, None)
+    score = np.clip(0.02*mp + rng.normal(0, 1.5, size=n) + (level=="High")*3 + (level=="Medium")*1.2, 0, None)
+    logits = -1.0 + 0.15*score + (polymer=="PS")*0.5 + (level=="High")*0.7
+    prob = 1/(1+np.exp(-logits))
+    risk_type = np.where(rng.uniform(size=n) < prob, "At_Risk", "Safe")
+    return sanitize_columns(pd.DataFrame({
+        "Risk_Score": score,
+        "Risk_Level": level,
+        "mp_count_per_l": mp,
+        "Polymer_Type": polymer,
+        "Risk_Type": pd.Series(risk_type).astype("category"),
+    }))
 
-def tune_logreg(pipe, X, y) -> GridSearchCV:
-    grid = {"clf__C": [0.1, 1.0, 3.0, 10.0]}
-    cv = StratifiedKFold(5, shuffle=True, random_state=42)
-    gs = GridSearchCV(pipe, grid, scoring="f1_weighted", cv=cv, n_jobs=-1, refit=True)
-    gs.fit(X, y)
-    return gs
+# -------------------- Caching --------------------
+@st.cache_data(show_spinner=False)
+def load_uploaded(file: st.runtime.uploaded_file_manager.UploadedFile) -> pd.DataFrame:
+    if file.name.lower().endswith(".parquet"):
+        return sanitize_columns(pd.read_parquet(file))
+    return sanitize_columns(pd.read_csv(file))
 
-def evaluate(models: Dict[str, object], Xtr, ytr, Xte, yte, outdir: str) -> Tuple[pd.DataFrame, str, object]:
+@st.cache_data(show_spinner=False)
+def mutual_info_plot(pre: ColumnTransformer, X: pd.DataFrame, y: pd.Series):
+    Xt = pre.fit_transform(X, y)
+    num_cols = pre.transformers_[0][2]
+    cat_cols = pre.transformers_[1][2]
+    ohe: OneHotEncoder = pre.named_transformers_["cat"].named_steps["ohe"]
+    cat_out = list(ohe.get_feature_names_out(cat_cols)) if len(cat_cols) else []
+    feat_names = list(num_cols) + cat_out
+
+    y_enc, _ = pd.factorize(y)
+    rng = np.random.RandomState(42)
+    idx = rng.choice(np.arange(Xt.shape[0]), size=min(5000, Xt.shape[0]), replace=False)
+    mi = mutual_info_classif(Xt[idx], y_enc[idx], random_state=42, discrete_features=[False]*Xt.shape[1])
+    mi_df = pd.DataFrame({"feature": feat_names, "mi": mi}).sort_values("mi", ascending=False)
+
+    fig = plt.figure()
+    top = mi_df.head(20)
+    plt.barh(top["feature"][::-1], top["mi"][::-1])
+    plt.title("Top Mutual Information Features")
+    plt.xlabel("MI")
+    buf = io.BytesIO(); plt.tight_layout(); plt.savefig(buf, format="png", dpi=160); plt.close(fig); buf.seek(0)
+    return mi_df, buf
+
+# -------------------- UI --------------------
+st.title("Risk Analytics & Modeling")
+
+with st.sidebar:
+    st.header("1) Data")
+    up = st.file_uploader("Upload CSV/Parquet", type=["csv","parquet"])
+    use_demo = st.checkbox("Or use demo data", value=(up is None))
+    st.header("2) Options")
+    test_size = st.slider("Test size", 0.1, 0.4, 0.2, 0.05)
+    seed = st.number_input("Random state", 0, 9999, 42, 1)
+    use_smote = st.checkbox("Address class imbalance with SMOTE", value=True and HAS_IMB,
+                            help="Requires imbalanced-learn. Auto-disabled if not installed.")
+    st.caption(f"SMOTE available: {'Yes' if HAS_IMB else 'No'}")
+    st.header("3) Run")
+    run = st.button("Run Pipeline", type="primary")
+
+# Load data
+if use_demo:
+    df = make_demo()
+    st.success(f"Loaded demo dataset • rows: {len(df)} • cols: {df.shape[1]}")
+else:
+    if not up:
+        st.info("Upload a dataset or enable demo to continue.")
+        st.stop()
+    df = load_uploaded(up)
+    st.success(f"Loaded: {up.name} • rows: {len(df)} • cols: {df.shape[1]}")
+
+st.expander("Preview data (first 50)").dataframe(df.head(50), use_container_width=True)
+
+# Column mapping
+st.subheader("Column mapping")
+cols = df.columns.tolist()
+c1, c2, c3 = st.columns(3)
+with c1:
+    target = st.selectbox("Target (classification)", [""] + cols,
+                          index=(cols.index("Risk_Type")+1) if "Risk_Type" in cols else 0)
+    risk_score = st.selectbox("Risk Score (numeric)", [""] + cols,
+                              index=(cols.index("Risk_Score")+1) if "Risk_Score" in cols else 0)
+with c2:
+    risk_level = st.selectbox("Risk Level (categorical)", [""] + cols,
+                              index=(cols.index("Risk_Level")+1) if "Risk_Level" in cols else 0)
+    mp_count = st.selectbox("mp_count_per_l (numeric)", [""] + cols,
+                            index=(cols.index("mp_count_per_l")+1) if "mp_count_per_l" in cols else 0)
+with c3:
+    polymer = st.selectbox("Polymer Type (optional)", [""] + cols,
+                           index=(cols.index("Polymer_Type")+1) if "Polymer_Type" in cols else 0)
+    id_cols = st.multiselect("ID columns to exclude", cols)
+date_cols = st.multiselect("Date/time columns to exclude", cols)
+
+cfg = ColumnConfig(
+    target=target or None,
+    risk_score=risk_score or None,
+    risk_level=risk_level or None,
+    mp_count=mp_count or None,
+    polymer=polymer or None,
+    id_cols=id_cols,
+    date_cols=date_cols,
+)
+
+if not cfg.target:
+    st.warning("Select a **Target** column to continue.")
+    st.stop()
+
+# -------------------- EDA --------------------
+st.subheader("Exploratory analysis")
+g1, g2, g3, g4 = st.columns(4)
+with g1:
+    if cfg.risk_score and cfg.risk_score in df:
+        fig = plt.figure()
+        plt.hist(df[cfg.risk_score].dropna(), bins=30)
+        plt.title("Risk Score Distribution"); plt.xlabel(cfg.risk_score); plt.ylabel("Count")
+        st.pyplot(fig, clear_figure=True)
+with g2:
+    if cfg.risk_score and cfg.risk_level and cfg.risk_score in df and cfg.risk_level in df:
+        levels = df[cfg.risk_level].dropna().unique()
+        data = [df.loc[df[cfg.risk_level]==lvl, cfg.risk_score].dropna().values for lvl in levels]
+        if len(data):
+            fig = plt.figure()
+            plt.boxplot(data, labels=[str(x) for x in levels], showfliers=True)
+            plt.title("Risk Score by Risk Level"); plt.xlabel("Risk Level"); plt.ylabel(cfg.risk_score)
+            st.pyplot(fig, clear_figure=True)
+with g3:
+    if cfg.risk_score and cfg.mp_count and cfg.risk_score in df and cfg.mp_count in df:
+        m = df[[cfg.mp_count, cfg.risk_score]].dropna()
+        fig = plt.figure()
+        plt.scatter(m[cfg.mp_count], m[cfg.risk_score], alpha=0.6)
+        plt.title("Risk Score vs mp_count_per_l"); plt.xlabel(cfg.mp_count); plt.ylabel(cfg.risk_score)
+        st.pyplot(fig, clear_figure=True)
+with g4:
+    if cfg.polymer and cfg.polymer in df:
+        counts = df[cfg.polymer].value_counts(dropna=False)
+        fig = plt.figure()
+        counts.plot(kind="bar")
+        plt.title("Polymer Type Distribution"); plt.xlabel("Polymer Type"); plt.ylabel("Count")
+        st.pyplot(fig, clear_figure=True)
+
+# -------------------- Run pipeline --------------------
+if not run:
+    st.stop()
+
+with st.spinner("Preparing data..."):
+    drop_cols = list(set(cfg.id_cols + cfg.date_cols + [cfg.target]))
+    X = df.drop(columns=[c for c in drop_cols if c in df], errors="ignore")
+    y = df[cfg.target].astype("category")
+    # Outlier capping
+    num_all = [c for c in X.columns if pd.api.types.is_numeric_dtype(df[c])]
+    X = cap_outliers_iqr(X, num_all)
+    # Preprocessor
+    pre, _, _ = build_preprocessor(df.drop(columns=[cfg.target]), cfg)
+
+# Feature selection diagnostics
+with st.spinner("Running feature selection diagnostics..."):
+    mi_df, mi_img = mutual_info_plot(pre, X, y)
+    st.image(mi_img, caption="Top Mutual Information Features", use_column_width=True)
+
+# Split & class distribution
+Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=test_size, stratify=y, random_state=int(seed))
+st.subheader("Class distribution (train)")
+class_dist = ytr.value_counts(normalize=True).rename("share").to_frame()
+class_dist["count"] = ytr.value_counts()
+st.dataframe(class_dist, use_container_width=True)
+
+# Build models
+def wrap(est):
+    if use_smote and HAS_IMB:
+        return ImbPipeline([("pre", pre), ("smote", SMOTE(random_state=int(seed))), ("clf", est)])
+    return Pipeline([("pre", pre), ("clf", est)])
+
+models = {
+    "logreg": wrap(LogisticRegression(max_iter=200, solver="lbfgs")),
+    "rf": wrap(RandomForestClassifier(n_estimators=300, random_state=int(seed), n_jobs=-1)),
+}
+
+# Tune Logistic Regression
+with st.spinner("Tuning Logistic Regression (C grid)..."):
+    gs = GridSearchCV(models["logreg"], {"clf__C": [0.1, 1.0, 3.0, 10.0]},
+                      cv=StratifiedKFold(5, shuffle=True, random_state=42),
+                      scoring="f1_weighted", n_jobs=-1, refit=True)
+    gs.fit(Xtr, ytr)
+    models["logreg_tuned"] = gs.best_estimator_
+st.caption(f"Best C: {getattr(gs.best_params_, 'get', lambda k, d=None: None)('clf__C', None)}")
+
+# Train & evaluate
+with st.spinner("Training models and evaluating..."):
     rows = []
+    best_name, best_score, best_pipe = None, -1.0, None
     labels = np.unique(yte)
-    best_name, best_score, best_pipe = "", -1.0, None
+    cm_imgs = []
+    roc_imgs = []
+
     for name, pipe in models.items():
         pipe.fit(Xtr, ytr)
         yhat = pipe.predict(Xte)
@@ -249,227 +306,134 @@ def evaluate(models: Dict[str, object], Xtr, ytr, Xte, yte, outdir: str) -> Tupl
         met["model"] = name
         rows.append(met)
 
+        # Confusion Matrix plot buffer
+        fig = plt.figure()
         cm = confusion_matrix(yte, yhat, labels=labels)
-        plt.figure(); plt.imshow(cm, interpolation="nearest"); plt.title(f"Confusion Matrix - {name}")
+        plt.imshow(cm, interpolation="nearest")
+        plt.title(f"Confusion Matrix - {name}")
         plt.xlabel("Predicted"); plt.ylabel("True")
         plt.xticks(ticks=np.arange(len(labels)), labels=labels, rotation=45)
         plt.yticks(ticks=np.arange(len(labels)), labels=labels)
         for (i, j), v in np.ndenumerate(cm): plt.text(j, i, str(v), ha="center", va="center")
-        savefig(os.path.join(outdir, f"cm_{name}.png"))
+        buf = io.BytesIO(); plt.tight_layout(); plt.savefig(buf, format="png", dpi=160); plt.close(fig); buf.seek(0)
+        cm_imgs.append((name, buf))
 
-        if proba is not None and len(labels) == 2:
+        # ROC (binary only)
+        if proba is not None and is_binary(yte):
             try:
+                fig = plt.figure()
                 RocCurveDisplay.from_predictions(yte, proba[:,1] if proba.ndim==2 else proba)
                 plt.title(f"ROC - {name}")
-                savefig(os.path.join(outdir, f"roc_{name}.png"))
+                rbuf = io.BytesIO(); plt.tight_layout(); plt.savefig(rbuf, format="png", dpi=160); plt.close(fig); rbuf.seek(0)
+                roc_imgs.append((name, rbuf))
             except Exception:
                 pass
-
-        with open(os.path.join(outdir, f"classification_report_{name}.txt"), "w", encoding="utf-8") as f:
-            f.write(classification_report(yte, yhat))
 
         if met["f1_w"] > best_score:
             best_name, best_score, best_pipe = name, met["f1_w"], pipe
 
-    leaderboard = pd.DataFrame(rows).sort_values("f1_w", ascending=False)
-    plt.figure(); plt.bar(leaderboard["model"], leaderboard["f1_w"])
-    plt.title("Model Comparison (F1-weighted)"); plt.xlabel("Model"); plt.ylabel("F1_weighted")
-    savefig(os.path.join(outdir, "model_comparison.png"))
-    return leaderboard, best_name, best_pipe
+leader = pd.DataFrame(rows).sort_values("f1_w", ascending=False)
+st.subheader("Model leaderboard (F1-weighted)")
+st.dataframe(leader, use_container_width=True)
 
-# ---------------- Feature relevance ----------------
-def feature_relevance(best_pipe, Xtr, ytr, outdir: str) -> Optional[str]:
-    try:
-        pre: ColumnTransformer = best_pipe.named_steps["pre"]
-    except Exception:
-        return None
+# Leaderboard bar
+fig = plt.figure()
+plt.bar(leader["model"], leader["f1_w"])
+plt.title("Model Comparison (F1-weighted)"); plt.xlabel("Model"); plt.ylabel("F1_weighted")
+st.pyplot(fig, clear_figure=True)
 
-    num_cols = pre.transformers_[0][2]
-    cat_cols = pre.transformers_[1][2]
-    ohe: OneHotEncoder = pre.named_transformers_["cat"].named_steps["ohe"]
+# Show CM and ROC
+st.subheader("Confusion matrices")
+for name, buf in cm_imgs:
+    st.image(buf, caption=name, use_column_width=True)
+
+if roc_imgs:
+    st.subheader("ROC curves (binary target)")
+    for name, buf in roc_imgs:
+        st.image(buf, caption=name, use_column_width=True)
+
+# Feature relevance
+st.subheader(f"Top features — best model: {best_name}")
+try:
+    pre_b: ColumnTransformer = best_pipe.named_steps["pre"]
+    num_cols = pre_b.transformers_[0][2]
+    cat_cols = pre_b.transformers_[1][2]
+    ohe: OneHotEncoder = pre_b.named_transformers_["cat"].named_steps["ohe"]
     cat_out = list(ohe.get_feature_names_out(cat_cols)) if len(cat_cols) else []
-    feat_names = list(num_cols) + cat_out
+    feature_names = list(num_cols) + cat_out
 
-    # Try model-derived
+    clf = best_pipe.named_steps["clf"]
     imp_df = None
-    try:
-        clf = best_pipe.named_steps["clf"]
-        if hasattr(clf, "feature_importances_"):
-            imp_df = pd.DataFrame({"feature": feat_names, "importance": clf.feature_importances_})
-        elif hasattr(clf, "coef_"):
-            coefs = np.mean(np.abs(clf.coef_), axis=0) if getattr(clf.coef_, "ndim", 1) > 1 else np.abs(clf.coef_)
-            imp_df = pd.DataFrame({"feature": feat_names, "importance": coefs})
-    except Exception:
-        pass
+    if hasattr(clf, "feature_importances_"):
+        imp_df = pd.DataFrame({"feature": feature_names, "importance": clf.feature_importances_})
+    elif hasattr(clf, "coef_"):
+        coefs = np.mean(np.abs(clf.coef_), axis=0) if getattr(clf.coef_, "ndim", 1) > 1 else np.abs(clf.coef_)
+        imp_df = pd.DataFrame({"feature": feature_names, "importance": coefs})
+    else:
+        imp_df = None
 
-    # Permutation (small subset)
+    # Permutation (subset) to augment, model-agnostic
     try:
-        idx = np.random.RandomState(42).choice(np.arange(Xtr.shape[0]), size=min(2000, Xtr.shape[0]), replace=False)
+        rng = np.random.RandomState(42)
+        idx = rng.choice(np.arange(Xtr.shape[0]), size=min(1500, Xtr.shape[0]), replace=False)
         res = permutation_importance(best_pipe, Xtr.iloc[idx], ytr.iloc[idx], n_repeats=8, random_state=42, n_jobs=-1)
-        perm = pd.DataFrame({"feature": feat_names, "perm_importance": res.importances_mean})
+        perm_df = pd.DataFrame({"feature": feature_names, "perm_importance": res.importances_mean})
         if imp_df is None:
-            imp_df = perm.rename(columns={"perm_importance": "importance"})
+            imp_df = perm_df.rename(columns={"perm_importance": "importance"})
         else:
-            imp_df = imp_df.merge(perm, on="feature", how="left")
+            imp_df = imp_df.merge(perm_df, on="feature", how="left")
     except Exception:
         pass
 
     if imp_df is not None:
-        imp_df = imp_df.sort_values("importance", ascending=False).head(20)
-        plt.figure(); plt.barh(imp_df["feature"][::-1], imp_df["importance"][::-1])
+        imp_top = imp_df.sort_values("importance", ascending=False).head(20)
+        fig = plt.figure()
+        plt.barh(imp_top["feature"][::-1], imp_top["importance"][::-1])
         plt.title("Top Feature Importance"); plt.xlabel("Importance")
-        p = os.path.join(outdir, "feature_importance.png"); savefig(p); return p
-    return None
-
-# ---------------- Summary ----------------
-def write_summary(figs: Dict[str, Optional[str]], leaderboard: pd.DataFrame, best_name: str, cfg: ColumnConfig, outdir: str, class_dist: str) -> str:
-    md = [
-        "# Summary",
-        "",
-        "## Tasks Completed",
-        "- Encode categorical variables",
-        "- Perform feature scaling",
-        "- Address outliers",
-        "- Analyze distribution of risk score",
-        "- Investigate difference in risk score by risk level",
-        "- Explore relationship between risk score and mp_count_per_l",
-        "- Transform skewed numerical columns",
-        "- Explore feature selection (variance + mutual information)",
-        "- Prepare/train/evaluate/tune models for Risk_Type",
-        "- Compare model performance",
-        "- Extract/analyze/visualize feature relevance",
-        "",
-        "## Columns",
-        f"- Target: `{cfg.target}`",
-        f"- Risk Score: `{cfg.risk_score}`",
-        f"- Risk Level: `{cfg.risk_level}`",
-        f"- mp_count_per_l: `{cfg.mp_count}`",
-        f"- Polymer Type: `{cfg.polymer}`",
-        "",
-        "## Class Distribution",
-        class_dist,
-        "",
-    ]
-
-    def add(title, key):
-        p = figs.get(key)
-        if p:
-            md.append(f"## {title}\n![]({os.path.relpath(p, outdir)})\n")
-
-    add("Risk Score Distribution", "risk_dist")
-    add("Risk Score by Risk Level", "risk_by_level")
-    add("Risk Score vs mp_count_per_l", "risk_vs_mp")
-    add("Polymer Type Distribution", "polymer_dist")
-    add("Top Mutual Information Features", "mi_top")
-    add("Model Comparison", "model_cmp")
-    add("Top Feature Importance", "feat_imp")
-
-    if leaderboard is not None and not leaderboard.empty:
-        md.append("## Leaderboard\n" + leaderboard.to_markdown(index=False))
-        md.append(f"\n**Best model:** `{best_name}`")
-
-    path = os.path.join(outdir, "summary.md")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(md))
-    return path
-
-# ---------------- Main ----------------
-def main():
-    ap = argparse.ArgumentParser(description="End-to-end risk pipeline (matches task list)")
-    ap.add_argument("--input", help="CSV or Parquet path")
-    ap.add_argument("--target", default=None)
-    ap.add_argument("--risk-score", dest="risk_score", default=None)
-    ap.add_argument("--risk-level", dest="risk_level", default=None)
-    ap.add_argument("--mp-count", dest="mp_count", default=None)
-    ap.add_argument("--polymer", default=None)
-    ap.add_argument("--id-cols", default=None)
-    ap.add_argument("--date-cols", default=None)
-    ap.add_argument("--test-size", type=float, default=0.2)
-    ap.add_argument("--random-state", type=int, default=42)
-    ap.add_argument("--no-smote", action="store_true", help="Disable SMOTE even if available")
-    ap.add_argument("--demo", action="store_true", help="Run on synthetic data")
-    ap.add_argument("--verbose", action="store_true")
-    args = ap.parse_args()
-
-    if args.demo:
-        demo = "demo.csv"
-        make_demo_csv(demo)
-        args.input = demo
-        args.target = args.target or "Risk_Type"
-        args.risk_score = args.risk_score or "Risk_Score"
-        args.risk_level = args.risk_level or "Risk_Level"
-        args.mp_count = args.mp_count or "mp_count_per_l"
-        args.polymer = args.polymer or "Polymer_Type"
-
-    if not args.input:
-        print("ERROR: provide --input <file> or use --demo", file=sys.stderr)
-        sys.exit(2)
-
-    # Load
-    log(f"Loading {args.input}", args.verbose)
-    if args.input.lower().endswith(".parquet"):
-        df = pd.read_parquet(args.input)
+        st.pyplot(fig, clear_figure=True)
+        st.dataframe(imp_top, use_container_width=True)
     else:
-        df = pd.read_csv(args.input)
-    df = sanitize_columns(df)
+        st.info("Feature importances not available for this estimator.")
+except Exception as e:
+    st.info(f"Could not compute feature relevance: {e}")
 
-    cfg = detect_columns(df, args)
-    log(f"Detected -> target:{cfg.target}, risk_score:{cfg.risk_score}, level:{cfg.risk_level}, mp:{cfg.mp_count}, polymer:{cfg.polymer}", args.verbose)
-    if not cfg.target or cfg.target not in df:
-        print("ERROR: target column missing; use --target", file=sys.stderr)
-        sys.exit(2)
+# -------------------- Markdown summary (download) --------------------
+st.subheader("Summary report")
+summary_lines = [
+    "# Risk Analytics & Modeling Summary",
+    "",
+    "## Tasks Completed",
+    "- Encode categorical variables",
+    "- Perform feature scaling",
+    "- Address outliers",
+    "- Analyze the distribution of risk score",
+    "- Explore risk score vs. mp_count_per_l",
+    "- Investigate difference in risk score by risk level",
+    "- Transform skewed numerical columns",
+    "- Explore feature selection (variance + mutual information)",
+    "- Prepare/train/tune/evaluate models for Risk_Type",
+    "- Compare model performance",
+    "- Extract/analyze/visualize feature relevance",
+    "",
+    "## Columns",
+    f"- Target: `{cfg.target}`",
+    f"- Risk Score: `{cfg.risk_score}`",
+    f"- Risk Level: `{cfg.risk_level}`",
+    f"- mp_count_per_l: `{cfg.mp_count}`",
+    f"- Polymer Type: `{cfg.polymer}`",
+    "",
+    "## Class Distribution (train)",
+    class_dist.to_markdown(),
+    "",
+    "## Leaderboard (F1-weighted)",
+    leader.to_markdown(index=False),
+    f"\n**Best model:** `{best_name}`",
+    "",
+    "## Data preview",
+    df_head_markdown(df, 5),
+]
+summary_md = "\n".join(summary_lines)
+st.download_button("Download summary.md", data=summary_md.encode("utf-8"),
+                   file_name="summary.md", mime="text/markdown")
+st.success("Done.")
 
-    outdirs = ensure_dirs()
-    plots = outdirs["plots"]
-
-    # EDA
-    log("EDA: generating plots", args.verbose)
-    figs = eda_plots(df, cfg, plots)
-
-    # Prepare features
-    drop_cols = list(set(cfg.id_cols + cfg.date_cols + [cfg.target]))
-    X = df.drop(columns=[c for c in drop_cols if c in df], errors="ignore")
-    y = df[cfg.target].astype("category")
-    # Outliers (numeric only)
-    num_all = [c for c in X.columns if pd.api.types.is_numeric_dtype(df[c])]
-    X = cap_outliers_iqr(X, num_all)
-
-    # Preprocess & feature selection diag
-    pre, _, _ = build_preprocessor(df.drop(columns=[cfg.target]), cfg)
-    log("Feature selection diagnostics", args.verbose)
-    low_var_df, mi_df = feature_selection_diag(X, y, pre, plots)
-    figs["mi_top"] = os.path.join(plots, "feature_mi_top20.png")
-
-    # Split & class dist
-    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=args.test_size, stratify=y, random_state=args.random_state)
-    class_dist = ytr.value_counts(normalize=True).rename("share").to_frame()
-    class_dist["count"] = ytr.value_counts()
-    class_dist_md = class_dist.to_markdown()
-
-    # Build/train/tune/eval
-    use_smote = (not args.no_smote) and HAS_IMB
-    log(f"Models: SMOTE={'on' if use_smote else 'off'}", args.verbose)
-    models = build_models(pre, use_smote, args.random_state)
-    tuned = tune_logreg(models["logreg"], Xtr, ytr)
-    models["logreg_tuned"] = tuned.best_estimator_
-
-    leaderboard, best_name, best_pipe = evaluate(models, Xtr, ytr, Xte, yte, plots)
-    figs["model_cmp"] = os.path.join(plots, "model_comparison.png")
-
-    # Feature relevance
-    figs["feat_imp"] = feature_relevance(best_pipe, Xtr, ytr, plots)
-
-    # Persist best model
-    try:
-        import joblib
-        joblib.dump(best_pipe, os.path.join(outdirs["base"], "best_model.joblib"))
-    except Exception:
-        pass  # non-fatal
-
-    # Summary
-    summary = write_summary(figs, leaderboard, best_name, cfg, outdirs["base"], class_dist_md)
-    print(f"Done. Summary: {summary}")
-    print("Open the images in outputs/plots/ and the markdown report at outputs/summary.md")
-
-if __name__ == "__main__":
-    main()
