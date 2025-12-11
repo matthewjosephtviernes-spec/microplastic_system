@@ -1,21 +1,17 @@
-# requirements.txt
+# requirements.txt  (Python >=3.9)
 
-# --- Core ---
+# Core
 numpy>=1.23
 pandas>=1.5
 scikit-learn>=1.3
 matplotlib>=3.6
 joblib>=1.2
 
-# --- IO (Parquet support) ---
+# Parquet (optional; remove if only CSV)
 pyarrow>=12
 
-# --- Class imbalance (SMOTE) ---
+# Imbalance handling (SMOTE). Remove if not needed.
 imbalanced-learn>=0.10
 
-# --- Optional models/explainability (safe to remove) ---
+# Optional extra model
 xgboost>=1.7
-shap>=0.44
-
-# --- Dev/compat (optional but helpful) ---
-typing-extensions>=4.7
