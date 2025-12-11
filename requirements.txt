@@ -1,4 +1,8 @@
-streamlit==1.32.0
-pandas==2.2.0
-plotly==5.22.0
-numpy==1.26.4
+streamlit
+pandas
+numpy
+scikit-learn
+imbalanced-learn
+xgboost
+matplotlib
+seaborn
