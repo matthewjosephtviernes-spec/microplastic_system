@@ -933,6 +933,48 @@ def main():
                 st.write("Class distribution in test set:")
                 st.write(split_info_rt["y_test_counts"])
 
+                # --- Sample predictions (for explanation/demo) ---
+                with st.expander("Show sample classification results for Risk_Type (True vs Predicted)"):
+                    st.markdown("""
+                    This table shows **example classification outputs** of the selected model.
+
+                    - Each row corresponds to a record in the dataset.  
+                    - `True_Risk_Type` = actual label from the dataset.  
+                    - `Pred_Risk_Type` = label predicted by the model.  
+                    """)
+
+                    # Use the same features/target definition as modeling
+                    X_rt, y_rt = get_Xy_for_target(df_raw, TARGET_RISK_TYPE, drop_cols_for_model)
+
+                    # Rebuild models and pick the best one based on F1-score (weighted)
+                    models = build_models_fast(fast_mode)
+                    if "F1-score (weighted)" in metrics_rt.columns:
+                        best_model_name = metrics_rt["F1-score (weighted)"].idxmax()
+                    else:
+                        best_model_name = metrics_rt["Accuracy"].idxmax()
+                    best_model = models[best_model_name]
+
+                    st.info(f"Best model (based on F1-score for Risk_Type): **{best_model_name}**")
+
+                    # Build pipeline and fit on the full data (for demo of predictions)
+                    preprocessor = build_preprocess_pipeline_cached(df_raw, drop_cols_for_model)
+                    demo_pipe = Pipeline(steps=[
+                        ("prep", preprocessor),
+                        ("model", best_model),
+                    ])
+                    demo_pipe.fit(X_rt, y_rt)
+
+                    # Predict on the full dataset (demo only)
+                    y_pred_all = demo_pipe.predict(X_rt)
+
+                    # Build a small table: some features + true & predicted labels
+                    demo_df = X_rt.copy()
+                    demo_df["True_Risk_Type"] = y_rt
+                    demo_df["Pred_Risk_Type"] = y_pred_all
+
+                    # Limit to first 20 rows for display
+                    st.dataframe(demo_df.head(20))
+
         with tab2:
             if TARGET_RISK_LEVEL not in df_raw.columns:
                 st.warning("Risk_Level column not found; cannot train models for Risk-Level.")
