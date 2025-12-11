@@ -6,12 +6,7 @@ pandas>=1.5
 scikit-learn>=1.3
 matplotlib>=3.6
 joblib>=1.2
+pyarrow>=12        # only if you read Parquet
 
-# Parquet (optional; remove if only CSV)
-pyarrow>=12
-
-# Imbalance handling (SMOTE). Remove if not needed.
+# Imbalance (SMOTE) — optional; remove if you don't need it
 imbalanced-learn>=0.10
-
-# Optional extra model
-xgboost>=1.7
