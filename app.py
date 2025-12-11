@@ -1,10 +1,15 @@
 # file: app.py
 """
-Risk analytics & modeling CLI.
+Risk analytics & modeling CLI with verbose logging and demo mode.
 
-Example:
+Quick start (demo):
+  python app.py --demo --verbose
+
+Real data:
   python app.py --input data.csv --target Risk_Type \
-    --risk-score Risk_Score --risk-level Risk_Level --mp-count mp_count_per_l --polymer Polymer_Type
+    --risk-score Risk_Score --risk-level Risk_Level --mp-count mp_count_per_l \
+    --polymer Polymer_Type --verbose
+
 Outputs:
   outputs/plots/*.png
   outputs/summary.md
@@ -15,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -52,9 +58,13 @@ except Exception:
     HAS_XGB = False
 
 warnings.filterwarnings("ignore", category=UserWarning)
-plt.switch_backend("Agg")  # headless
+plt.switch_backend("Agg")  # save to files (no GUI)
 
-# ---------- small utils ----------
+# ---------------- Utils ----------------
+def log(msg: str, enabled: bool) -> None:
+    if enabled:
+        print(msg, flush=True)
+
 def ensure_dirs() -> Dict[str, str]:
     base = "outputs"; plots = os.path.join(base, "plots")
     os.makedirs(plots, exist_ok=True)
@@ -66,7 +76,7 @@ def savefig(path: str) -> None:
 def is_binary(y: pd.Series) -> bool:
     return y.nunique(dropna=True) == 2
 
-# ---------- IO ----------
+# ---------------- IO ----------------
 def load_table(path: str) -> pd.DataFrame:
     if not os.path.exists(path):
         raise FileNotFoundError(path)
@@ -77,7 +87,28 @@ def load_table(path: str) -> pd.DataFrame:
 def sanitize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy(); df.columns = [c.strip().replace(" ", "_") for c in df.columns]; return df
 
-# ---------- column config ----------
+# ---------------- Demo data ----------------
+def make_demo_csv(path: str, n: int = 1200, seed: int = 42) -> str:
+    rng = np.random.RandomState(seed)
+    risk_level = rng.choice(["Low","Medium","High"], size=n, p=[0.5,0.35,0.15])
+    polymer = rng.choice(["PE","PP","PS","PET","PVC"], size=n)
+    mp = np.clip(rng.normal(100, 40, size=n) + (risk_level == "High")*50 + (risk_level == "Medium")*20, 5, None)
+    score = np.clip(0.02*mp + rng.normal(0, 1.5, size=n) + (risk_level == "High")*3 + (risk_level == "Medium")*1.2, 0, None)
+    # Target depends on score + polymer
+    logits = -1.0 + 0.15*score + (polymer == "PS")*0.5 + (risk_level == "High")*0.7
+    prob = 1/(1+np.exp(-logits))
+    risk_type = np.where(rng.uniform(size=n) < prob, "At_Risk", "Safe")
+    df = pd.DataFrame({
+        "Risk_Score": score,
+        "Risk_Level": risk_level,
+        "mp_count_per_l": mp,
+        "Polymer_Type": polymer,
+        "Risk_Type": pd.Series(risk_type).astype("category")
+    })
+    df.to_csv(path, index=False)
+    return path
+
+# ---------------- Column config ----------------
 @dataclass
 class ColumnConfig:
     id_cols: List[str]; date_cols: List[str]
@@ -100,7 +131,7 @@ def detect_columns(df: pd.DataFrame, args: argparse.Namespace) -> ColumnConfig:
     date_cols = [c for c in (args.date_cols or "").split(",") if c in cols] if args.date_cols else []
     return ColumnConfig(id_cols, date_cols, target, risk_score, risk_level, mp_count, polymer)
 
-# ---------- EDA ----------
+# ---------------- EDA ----------------
 def plot_risk_score_distribution(df: pd.DataFrame, cfg: ColumnConfig, outdir: str) -> Optional[str]:
     if not cfg.risk_score or cfg.risk_score not in df: return None
     s = df[cfg.risk_score].dropna()
@@ -133,7 +164,7 @@ def plot_polymer_distribution(df: pd.DataFrame, cfg: ColumnConfig, outdir: str) 
     plt.title("Polymer Type Distribution"); plt.xlabel("Polymer Type"); plt.ylabel("Count")
     p = os.path.join(outdir, "polymer_type_distribution.png"); savefig(p); return p
 
-# ---------- preprocessing ----------
+# ---------------- Preprocessing ----------------
 def cap_outliers_iqr(X: pd.DataFrame, numeric_cols: List[str]) -> pd.DataFrame:
     X = X.copy()
     for c in numeric_cols:
@@ -158,7 +189,7 @@ def build_preprocessor(df: pd.DataFrame, cfg: ColumnConfig) -> Tuple[ColumnTrans
     pre = ColumnTransformer([("num", num_pipe, num_cols), ("cat", cat_pipe, cat_cols)], remainder="drop")
     return pre, num_cols, cat_cols
 
-# ---------- feature selection diag ----------
+# ---------------- Feature selection diag ----------------
 def feature_selection_diag(X: pd.DataFrame, y: pd.Series, pre: ColumnTransformer, max_feats: int = 50) -> Dict[str, object]:
     Xt = pre.fit_transform(X, y)
     num_cols = pre.transformers_[0][2]
@@ -176,7 +207,7 @@ def feature_selection_diag(X: pd.DataFrame, y: pd.Series, pre: ColumnTransformer
     mi_rank = sorted(zip(feat_names, mi), key=lambda t: t[1], reverse=True)
     return {"feature_names": feat_names, "low_variance": low_var, "mi_ranking": mi_rank, "top_mi": mi_rank[:max_feats]}
 
-# ---------- models ----------
+# ---------------- Models ----------------
 def build_models(pre: ColumnTransformer, random_state: int = 42) -> Dict[str, object]:
     base = {
         "logreg": LogisticRegression(max_iter=200, solver="lbfgs"),
@@ -213,10 +244,11 @@ def summarize_metrics(y_true, y_pred, proba=None) -> Dict[str, float]:
             pass
     return out
 
-def evaluate_models(models: Dict[str, object], Xtr, ytr, Xte, yte, outdir: str):
+def evaluate_models(models: Dict[str, object], Xtr, ytr, Xte, yte, outdir: str, verbose: bool):
     rows = []; best = ("", -np.inf, None)
     labels = np.unique(yte)
     for name, pipe in models.items():
+        log(f"Training {name} ...", verbose)
         pipe.fit(Xtr, ytr)
         yhat = pipe.predict(Xte)
         proba = None
@@ -250,7 +282,7 @@ def evaluate_models(models: Dict[str, object], Xtr, ytr, Xte, yte, outdir: str):
     savefig(os.path.join(outdir, "model_comparison.png"))
     return leaderboard, best[0], best[2]
 
-# ---------- feature relevance ----------
+# ---------------- Feature relevance ----------------
 def feature_relevance(best_pipe, Xtr, ytr, outdir: str):
     try:
         pre: ColumnTransformer = best_pipe.named_steps["pre"]
@@ -289,7 +321,7 @@ def feature_relevance(best_pipe, Xtr, ytr, outdir: str):
         return imp_df, path
     return None, None
 
-# ---------- summary ----------
+# ---------------- Summary ----------------
 def write_summary(figs: Dict[str, Optional[str]], leaderboard: Optional[pd.DataFrame], best_name: str, cfg: ColumnConfig, outdir: str) -> str:
     md = ["# Risk Analytics & Modeling Summary","",
           "## Columns",
@@ -317,10 +349,10 @@ def write_summary(figs: Dict[str, Optional[str]], leaderboard: Optional[pd.DataF
     with open(path, "w", encoding="utf-8") as f: f.write("\n".join(md))
     return path
 
-# ---------- main ----------
+# ---------------- Main ----------------
 def main():
     ap = argparse.ArgumentParser(description="Risk analytics pipeline")
-    ap.add_argument("--input", required=True)
+    ap.add_argument("--input", help="CSV/Parquet file path")
     ap.add_argument("--target", default=None)
     ap.add_argument("--risk-score", dest="risk_score", default=None)
     ap.add_argument("--risk-level", dest="risk_level", default=None)
@@ -330,45 +362,94 @@ def main():
     ap.add_argument("--date-cols", default=None)
     ap.add_argument("--test-size", type=float, default=0.2)
     ap.add_argument("--random-state", type=int, default=42)
+    ap.add_argument("--verbose", action="store_true", help="Print progress logs")
+    ap.add_argument("--demo", action="store_true", help="Generate synthetic demo data and run")
     args = ap.parse_args()
 
-    out = ensure_dirs(); plots = out["plots"]; base = out["base"]
+    if args.demo:
+        demo_path = "demo.csv"
+        make_demo_csv(demo_path)
+        args.input = demo_path
+        if args.target is None: args.target = "Risk_Type"
+        if args.risk_score is None: args.risk_score = "Risk_Score"
+        if args.risk_level is None: args.risk_level = "Risk_Level"
+        if args.mp_count is None: args.mp_count = "mp_count_per_l"
+        if args.polymer is None: args.polymer = "Polymer_Type"
 
+    if not args.input:
+        print("ERROR: Provide --input <file> or use --demo", file=sys.stderr)
+        sys.exit(2)
+
+    out = ensure_dirs(); plots = out["plots"]; base = out["base"]
+    log(f"Loading: {args.input}", args.verbose)
     df = load_table(args.input); df = sanitize_columns(df)
+
     cfg = detect_columns(df, args)
-    if cfg.target is None or cfg.target not in df: raise ValueError("Target column not found. Provide --target.")
+    log(f"Detected columns -> target: {cfg.target}, risk_score: {cfg.risk_score}, "
+        f"risk_level: {cfg.risk_level}, mp_count: {cfg.mp_count}, polymer: {cfg.polymer}", args.verbose)
+
+    if cfg.target is None or cfg.target not in df:
+        print("ERROR: Target column missing. Use --target or include Risk_Type.", file=sys.stderr)
+        sys.exit(2)
+
     drop_cols = list(set((cfg.id_cols or []) + (cfg.date_cols or []) + [cfg.target]))
     X = df.drop(columns=[c for c in drop_cols if c in df], errors="ignore")
     y = df[cfg.target].astype("category")
 
+    # EDA
+    log("Generating EDA plots ...", args.verbose)
     figs: Dict[str, Optional[str]] = {}
     figs["risk_dist"] = plot_risk_score_distribution(df, cfg, plots)
     figs["risk_by_level"] = plot_risk_score_by_level(df, cfg, plots)
     figs["risk_vs_mp"] = plot_risk_vs_mp(df, cfg, plots)
     figs["polymer_dist"] = plot_polymer_distribution(df, cfg, plots)
 
+    # Outliers
+    log("Capping outliers (IQR) ...", args.verbose)
     num_cols_all = [c for c in X.columns if pd.api.types.is_numeric_dtype(df[c])]
     X = cap_outliers_iqr(X, num_cols_all)
 
+    # Preprocessor
+    log("Building preprocessors ...", args.verbose)
     pre, _, _ = build_preprocessor(df.drop(columns=[cfg.target]), cfg)
-    _ = feature_selection_diag(X, y, pre, max_feats=50)  # diagnostics only
 
+    # Feature selection diag
+    log("Running feature selection diagnostics ...", args.verbose)
+    _ = feature_selection_diag(X, y, pre, max_feats=50)
+
+    # Split
+    log("Splitting train/test ...", args.verbose)
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=args.test_size, stratify=y, random_state=args.random_state)
+
+    # Models
+    log("Building models ...", args.verbose)
     models = build_models(pre, random_state=args.random_state)
+    log("Tuning logistic regression ...", args.verbose)
     tuned = tune_logreg(models["logreg"], Xtr, ytr); models["logreg_tuned"] = tuned.best_estimator_
-    leaderboard, best_name, best_pipe = evaluate_models(models, Xtr, ytr, Xte, yte, plots)
+
+    # Evaluate
+    log("Training & evaluating ...", args.verbose)
+    leaderboard, best_name, best_pipe = evaluate_models(models, Xtr, ytr, Xte, yte, plots, args.verbose)
     figs["model_cmp"] = os.path.join(plots, "model_comparison.png")
 
+    # Feature importance
+    log(f"Computing feature relevance for best model: {best_name} ...", args.verbose)
     _, feat_fig = feature_relevance(best_pipe, Xtr, ytr, plots)
     figs["feat_imp"] = feat_fig
 
+    # Save model
     try:
-        import joblib; joblib.dump(best_pipe, os.path.join(base, "best_model.joblib"))
-    except Exception:
-        pass
+        import joblib
+        joblib.dump(best_pipe, os.path.join(base, "best_model.joblib"))
+        log("Saved best_model.joblib", args.verbose)
+    except Exception as e:
+        log(f"Could not save model: {e}", args.verbose)
 
+    # Summary
+    log("Writing summary ...", args.verbose)
     summary = write_summary(figs, leaderboard, best_name, cfg, base)
     print(f"Done. Summary: {summary}")
+    print("Check images in outputs/plots/ and open outputs/summary.md")
 
 if __name__ == "__main__":
     main()
