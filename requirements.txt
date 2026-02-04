@@ -1,9 +1,4 @@
-fastapi==0.114.2
-uvicorn[standard]==0.30.6
-numpy==1.26.4
-pandas==2.2.2
-scikit-learn==1.4.2
-imbalanced-learn==0.12.2
-joblib==1.4.2
-matplotlib==3.8.4
-python-multipart==0.0.9
+streamlit==1.18.1
+pandas==1.5.3
+seaborn==0.11.2
+matplotlib==3.6.2
