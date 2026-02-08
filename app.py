@@ -284,7 +284,6 @@ def coerce_numeric_like(df: pd.DataFrame, columns):
 def compute_mutual_information(X: pd.DataFrame, y: pd.Series, n_top: int = 20) -> pd.DataFrame:
     """
     Compute Mutual Information scores for each feature with the target.
-    Works with both numeric and categorical features.
     """
     try:
         mi_scores = mutual_info_classif(X, y, random_state=42)
@@ -302,10 +301,8 @@ def compute_mutual_information(X: pd.DataFrame, y: pd.Series, n_top: int = 20) -
 def compute_chi_squared(X: pd.DataFrame, y: pd.Series, n_top: int = 20) -> pd.DataFrame:
     """
     Compute Chi-squared scores for categorical features.
-    Note: Chi-squared requires non-negative features.
     """
     try:
-        # Shift features to be non-negative (chi2 requirement)
         X_shifted = X - X.min() + 1e-10
         chi2_scores = chi2(X_shifted, y)[0]
         
@@ -316,7 +313,7 @@ def compute_chi_squared(X: pd.DataFrame, y: pd.Series, n_top: int = 20) -> pd.Da
         
         return chi2_df.head(n_top)
     except Exception as e:
-        st.warning(f"Chi-squared computation failed (may require non-negative features): {e}")
+        st.warning(f"Chi-squared computation failed: {e}")
         return pd.DataFrame()
 
 
@@ -341,21 +338,18 @@ def compute_rf_importance(X: pd.DataFrame, y: pd.Series, n_top: int = 20, n_esti
 
 def rank_features_multi_method(X: pd.DataFrame, y: pd.Series, n_top: int = 15) -> dict:
     """
-    Rank features using multiple methods and return comprehensive ranking report.
+    Rank features using multiple methods.
     """
     results = {}
     
-    # Mutual Information
     st.info("Computing Mutual Information scores...")
     mi_scores = compute_mutual_information(X, y, n_top=n_top)
     results["Mutual Information"] = mi_scores
     
-    # Chi-squared
     st.info("Computing Chi-squared scores...")
     chi2_scores = compute_chi_squared(X, y, n_top=n_top)
     results["Chi-squared"] = chi2_scores
     
-    # Random Forest Importance
     st.info("Computing Random Forest feature importance...")
     rf_scores = compute_rf_importance(X, y, n_top=n_top, n_estimators=200)
     results["Random Forest"] = rf_scores
@@ -475,9 +469,9 @@ def build_preprocess_pipeline_cached(df_raw: pd.DataFrame, drop_cols_for_model: 
     categorical_pipe = Pipeline(steps=[
         ("imputer", SimpleImputer(strategy="most_frequent", fill_value="missing")),
         ("onehot", OneHotEncoder(
-            handle_unknown="ignore",  # Ignore unknown categories instead of error
-            drop="first",              # Avoid multicollinearity
-            sparse_output=False,       # Return dense array
+            handle_unknown="ignore",
+            drop="first",
+            sparse_output=False,
             dtype=np.float64
         )),
     ])
@@ -494,7 +488,7 @@ def build_preprocess_pipeline_cached(df_raw: pd.DataFrame, drop_cols_for_model: 
 
 def get_Xy_for_target(df_raw: pd.DataFrame, target_col: str, drop_cols_for_model: tuple):
     """
-    Extract features and target with proper handling of missing values and rare classes.
+    Extract features and target with proper handling of missing values.
     """
     df = df_raw.copy()
     df = coerce_numeric_like(df, NUMERIC_COLS)
@@ -924,7 +918,7 @@ def plot_feature_ranking_comparison(ranking_results: dict, target_col: str):
     methods = ["Mutual Information", "Chi-squared", "Random Forest"]
     for idx, (ax, method) in enumerate(zip(axes, methods)):
         if method in ranking_results and not ranking_results[method].empty:
-            df = ranking_results[method].iloc[:10]  # Top 10
+            df = ranking_results[method].iloc[:10]
             score_col = [c for c in df.columns if c != "Feature"][0]
             df_sorted = df.sort_values(score_col)
             ax.barh(df_sorted["Feature"], df_sorted[score_col], color="steelblue")
@@ -977,7 +971,8 @@ def main():
 
         ✅ Modeling + CV are leakage-safe (Pipeline does preprocessing inside train/CV folds).  
         ✅ Numeric coercion prevents SimpleImputer fit errors.  
-        ✅ OneHotEncoder safely handles unknown categories with `handle_unknown='ignore'`.
+        ✅ OneHotEncoder safely handles unknown categories with `handle_unknown='ignore'`.  
+        ✅ Multi-method feature selection using MI, Chi-squared, and Random Forest.
         """
     )
 
@@ -1144,7 +1139,6 @@ def main():
             st.write("**Outlier Detection Report:**")
             st.dataframe(outlier_report, use_container_width=True)
             
-            # Show summary statistics
             col1, col2, col3 = st.columns(3)
             with col1:
                 total_outliers = outlier_report["Outliers_Detected"].sum()
@@ -1180,7 +1174,6 @@ def main():
         else:
             st.info("ℹ️ No highly skewed columns detected (|skewness| ≤ 0.5)")
         
-        # Summary visualization
         st.write("**Skewness Before & After:**")
         skewness_summary = pd.DataFrame({
             "Column": numeric_cols_present,
@@ -1192,13 +1185,11 @@ def main():
         # Step 5: Final Preprocessed Data Summary
         st.subheader("Step 5: Final Preprocessed Data (Ready for Modeling)")
         
-        # Display sample of final preprocessed data
         st.write("**Final Preprocessed Dataset (First 10 rows):**")
         display_cols = numeric_cols_present + [c for c in categorical_features if c not in drop_cols_for_model]
         if display_cols:
             st.dataframe(df_transformed[display_cols].head(10), use_container_width=True)
         
-        # Summary statistics
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Rows", len(df_transformed))
@@ -1209,7 +1200,6 @@ def main():
         with col4:
             st.metric("Categorical Features", len([c for c in categorical_features if c not in drop_cols_for_model]))
         
-        # Final descriptive statistics
         st.write("**Descriptive Statistics (Processed Data):**")
         if numeric_cols_present:
             st.dataframe(df_transformed[numeric_cols_present].describe(), use_container_width=True)
@@ -1225,9 +1215,11 @@ def main():
         
         st.markdown("""
         This section performs comprehensive feature selection and ranking using:
-        - **Mutual Information** - Dependency measurement
+        - **Mutual Information** - Dependency measurement between feature and target
         - **Chi-squared** - Statistical independence test
-        - **Random Forest Importance** - Model-based ranking
+        - **Random Forest Importance** - Model-based feature ranking
+        
+        **Classification Models:** Logistic Regression, Random Forest, Gradient Boosting
         """)
         
         tab_rt, tab_rl = st.tabs([TARGET_RISK_TYPE, TARGET_RISK_LEVEL])
@@ -1250,7 +1242,6 @@ def main():
             st.subheader("Feature Ranking Results")
             
             with st.spinner("Computing feature rankings..."):
-                # Prepare numeric data
                 X_numeric = X.copy()
                 for col in X_numeric.columns:
                     if X_numeric[col].dtype == "object":
@@ -1318,6 +1309,8 @@ def main():
                     metrics_df = pd.DataFrame(metrics_list).set_index("Model")
                     st.dataframe(metrics_df.round(4), use_container_width=True)
                     st.pyplot(plot_metrics_bar(metrics_df, f"({target_col})"))
+                else:
+                    st.error("No models trained successfully.")
 
         with tab_rt:
             if TARGET_RISK_TYPE in df_raw.columns:
@@ -1368,6 +1361,7 @@ def main():
 
         target = TARGET_RISK_TYPE
         model_name = "Logistic Regression"
+        st.info(f"Target: **{target}** | Model: **{model_name}**")
         
         n_splits = st.slider("Number of folds (k)", min_value=3, max_value=5, value=3, step=1)
         stratified = st.checkbox("Use Stratified K-Fold", value=True)
@@ -1376,3 +1370,19 @@ def main():
             st.warning(f"Dataset has {len(df_raw)} rows. Sampling 500 rows for efficient CV.")
             df_cv = df_raw.sample(500, random_state=42).reset_index(drop=True)
         else:
+            df_cv = df_raw.copy()
+
+        st.divider()
+
+        if st.button("Run Cross-Validation", type="primary"):
+            with st.spinner(f"Running {n_splits}-Fold CV on {model_name} ({target})..."):
+                try:
+                    summary_df, _, cv_note = run_cv(
+                        df_raw=df_cv,
+                        target_col=target,
+                        model_name=model_name,
+                        n_splits=n_splits,
+                        stratified=stratified,
+                        drop_cols_for_model=drop_cols_for_model,
+                        fast_mode=fast_mode,
+                    )
