@@ -20,6 +20,9 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.feature_selection import mutual_info_classif, chi2
 
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.preprocessing._encoders")
+
 # Optional: SMOTE
 try:
     from imblearn.over_sampling import SMOTE
@@ -451,10 +454,14 @@ def pick_safe_cv(y: pd.Series, requested_splits: int, stratified: bool):
 
 
 # -------------------------------------------------------
-# PIPELINES
+# PIPELINES - FIXED WITH ROBUST ONEHOTENCODER
 # -------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def build_preprocess_pipeline_cached(df_raw: pd.DataFrame, drop_cols_for_model: tuple):
+    """
+    Build preprocessing pipeline with robust handling of unknown categories.
+    Uses handle_unknown='ignore' and sparse_output=False to prevent warnings.
+    """
     numeric_features = [c for c in NUMERIC_COLS if c in df_raw.columns]
     numeric_features = [c for c in numeric_features if df_raw[c].notna().any()]
 
@@ -466,8 +473,13 @@ def build_preprocess_pipeline_cached(df_raw: pd.DataFrame, drop_cols_for_model: 
     ])
 
     categorical_pipe = Pipeline(steps=[
-        ("imputer", SimpleImputer(strategy="most_frequent")),
-        ("onehot", OneHotEncoder(handle_unknown="ignore", drop="first")),
+        ("imputer", SimpleImputer(strategy="most_frequent", fill_value="missing")),
+        ("onehot", OneHotEncoder(
+            handle_unknown="ignore",  # Ignore unknown categories instead of error
+            drop="first",              # Avoid multicollinearity
+            sparse_output=False,       # Return dense array
+            dtype=np.float64
+        )),
     ])
 
     preprocessor = ColumnTransformer(
@@ -481,6 +493,9 @@ def build_preprocess_pipeline_cached(df_raw: pd.DataFrame, drop_cols_for_model: 
 
 
 def get_Xy_for_target(df_raw: pd.DataFrame, target_col: str, drop_cols_for_model: tuple):
+    """
+    Extract features and target with proper handling of missing values and rare classes.
+    """
     df = df_raw.copy()
     df = coerce_numeric_like(df, NUMERIC_COLS)
 
@@ -499,6 +514,14 @@ def get_Xy_for_target(df_raw: pd.DataFrame, target_col: str, drop_cols_for_model
     y = y.loc[mask].copy()
 
     y = merge_rare_classes(y, min_count=2, other_label="Other")
+    
+    # Handle missing values in features
+    for col in X.columns:
+        if X[col].dtype == "object":
+            X[col] = X[col].fillna("missing")
+        else:
+            X[col] = X[col].fillna(X[col].median())
+    
     return X, y
 
 
@@ -520,6 +543,9 @@ def train_holdout_models_cached(
     fast_mode: bool,
     use_smote: bool = False,
 ):
+    """
+    Train holdout models with proper preprocessing pipeline.
+    """
     X, y = get_Xy_for_target(df_raw, target_col, drop_cols_for_model)
 
     (X_train, X_test, y_train, y_test), used_stratify, final_test_size = safe_train_test_split(
@@ -586,6 +612,9 @@ def smote_and_tune_logreg_pipeline(
     drop_cols_for_model: tuple,
     fast_mode: bool,
 ):
+    """
+    SMOTE and hyperparameter tuning with proper preprocessing.
+    """
     if not IMBLEARN_OK:
         raise RuntimeError("imbalanced-learn is required for SMOTE. Install: pip install imbalanced-learn")
 
@@ -703,11 +732,7 @@ def run_cv(
     fast_mode: bool,
 ):
     """
-    Manual, crash-safe cross validation:
-    - uses pick_safe_cv() to choose cv object
-    - loops over folds manually
-    - skips folds where y_train has < 2 classes
-    - catches exceptions per fold, sets metrics to NaN
+    Manual, crash-safe cross validation with robust preprocessing.
     """
     X, y = get_Xy_for_target(df_raw, target_col, drop_cols_for_model)
 
@@ -718,8 +743,6 @@ def run_cv(
 
     cv, cv_note = pick_safe_cv(y, n_splits, stratified)
     preprocessor = build_preprocess_pipeline_cached(df_raw, drop_cols_for_model)
-
-    # NOTE: For CV we removed SMOTE to keep it very lightweight and robust
 
     fold_scores = {
         "accuracy": [],
@@ -954,7 +977,7 @@ def main():
 
         ✅ Modeling + CV are leakage-safe (Pipeline does preprocessing inside train/CV folds).  
         ✅ Numeric coercion prevents SimpleImputer fit errors.  
-        ✅ Model Validation is simplified & lightweight (Logistic Regression, optional row sampling).
+        ✅ OneHotEncoder safely handles unknown categories with `handle_unknown='ignore'`.
         """
     )
 
@@ -1087,7 +1110,7 @@ def main():
             else:
                 st.info("Columns 'Risk_Level' and/or 'Risk_Score' not found.")
 
-    # -------------------- PAGE 2 - ENHANCED PREPROCESSING --------------------
+    # -------------------- PAGE 2 - PREPROCESSING --------------------
     elif page == "Preprocessing (Task 2)":
         st.header("Task 2: Comprehensive Preprocessing & Feature Engineering")
         
@@ -1196,190 +1219,160 @@ def main():
             "leakage-safe validation. This page is for EDA and interpretation only."
         )
 
-    # -------------------- PAGE 3 - ENHANCED FEATURE SELECTION & RELEVANCE --------------------
+    # -------------------- PAGE 3 - FEATURE SELECTION --------------------
     elif page == "Feature Selection & Relevance (Task 3 & 6)":
-        st.header("Tasks 3 & 6: Feature Selection / Relevance (Multi-Method Approach)")
+        st.header("Tasks 3 & 6: Feature Selection / Relevance (Model-based)")
         
         st.markdown("""
-        This section performs comprehensive feature selection and ranking using multiple methods:
-        
-        **Feature Selection Methods:**
-        1. **Mutual Information (MI)** - Measures dependency between feature and target
-        2. **Chi-squared Test** - Statistical test for categorical features
-        3. **Random Forest Importance** - Model-based feature importance scores
-        
-        **Classification Models Trained:**
-        - Logistic Regression (baseline)
-        - Random Forest Classifier (ensemble)
-        - Gradient Boosting Classifier (advanced ensemble)
-        
-        **Target Variables:** Risk_Type and Risk_Level
+        This section performs comprehensive feature selection and ranking using:
+        - **Mutual Information** - Dependency measurement
+        - **Chi-squared** - Statistical independence test
+        - **Random Forest Importance** - Model-based ranking
         """)
         
-        # Select target variable
-        target_options = []
-        if TARGET_RISK_TYPE in df_raw.columns:
-            target_options.append(TARGET_RISK_TYPE)
-        if TARGET_RISK_LEVEL in df_raw.columns:
-            target_options.append(TARGET_RISK_LEVEL)
-        
-        if not target_options:
-            st.error("Neither Risk_Type nor Risk_Level found in the dataset.")
-            return
-        
-        # Use tabs for Risk_Type and Risk_Level
-        tabs = st.tabs(target_options)
-        
-        for tab_idx, target_col in enumerate(target_options):
-            with tabs[tab_idx]:
-                st.subheader(f"Feature Selection & Classification for {target_col}")
+        tab_rt, tab_rl = st.tabs([TARGET_RISK_TYPE, TARGET_RISK_LEVEL])
+
+        def run_feature_analysis(target_col: str):
+            try:
+                X, y = get_Xy_for_target(df_raw, target_col, drop_cols_for_model)
+            except Exception as e:
+                st.error(f"Error: {e}")
+                return
+            
+            if y.nunique() < 2:
+                st.warning(f"Not enough classes in {target_col} (need ≥ 2).")
+                return
+
+            st.write(f"**Data prepared:** {X.shape[0]} samples × {X.shape[1]} features")
+            st.write(f"**Class distribution:** {dict(y.value_counts())}")
+
+            # Feature Ranking
+            st.subheader("Feature Ranking Results")
+            
+            with st.spinner("Computing feature rankings..."):
+                # Prepare numeric data
+                X_numeric = X.copy()
+                for col in X_numeric.columns:
+                    if X_numeric[col].dtype == "object":
+                        le = LabelEncoder()
+                        X_numeric[col] = le.fit_transform(X_numeric[col].astype(str))
                 
-                # Get features and target
-                try:
-                    X_full, y_full = get_Xy_for_target(df_raw, target_col, drop_cols_for_model)
-                except Exception as e:
-                    st.error(f"Error preparing data for {target_col}: {e}")
-                    continue
-                
-                if y_full.nunique() < 2:
-                    st.warning(f"Target {target_col} has fewer than 2 classes. Skipping.")
-                    continue
-                
-                st.info(f"✅ Data ready: {X_full.shape[0]} samples × {X_full.shape[1]} features")
-                st.write(f"**Target distribution:** {dict(y_full.value_counts())}")
-                
-                # Step 1: Feature Ranking
-                st.subheader("Step 1: Feature Ranking (Multi-Method)")
-                st.write("Computing feature importance using Mutual Information, Chi-squared, and Random Forest...")
-                
-                with st.spinner(f"Computing rankings for {target_col}..."):
-                    # Prepare numeric data for feature selection
-                    X_numeric = X_full.copy()
-                    for col in X_numeric.columns:
-                        if X_numeric[col].dtype == "object":
-                            le = LabelEncoder()
-                            X_numeric[col] = le.fit_transform(X_numeric[col].astype(str))
-                    
-                    # Compute rankings
-                    ranking_results = rank_features_multi_method(X_numeric, y_full, n_top=15)
-                
-                # Display ranking results
-                st.write("**Feature Ranking Results:**")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.write("**Mutual Information (Top 15):**")
-                    if "Mutual Information" in ranking_results and not ranking_results["Mutual Information"].empty:
-                        mi_df = ranking_results["Mutual Information"]
-                        st.dataframe(mi_df, use_container_width=True, height=400)
-                    else:
-                        st.warning("MI computation failed or no data.")
-                
-                with col2:
-                    st.write("**Chi-squared (Top 15):**")
-                    if "Chi-squared" in ranking_results and not ranking_results["Chi-squared"].empty:
-                        chi2_df = ranking_results["Chi-squared"]
-                        st.dataframe(chi2_df, use_container_width=True, height=400)
-                    else:
-                        st.warning("Chi-squared computation failed or no data.")
-                
-                with col3:
-                    st.write("**Random Forest Importance (Top 15):**")
-                    if "Random Forest" in ranking_results and not ranking_results["Random Forest"].empty:
-                        rf_df = ranking_results["Random Forest"]
-                        st.dataframe(rf_df, use_container_width=True, height=400)
-                    else:
-                        st.warning("RF computation failed or no data.")
-                
-                # Visualization
-                st.subheader("Feature Ranking Visualization")
-                if ranking_results:
-                    fig = plot_feature_ranking_comparison(ranking_results, target_col)
-                    st.pyplot(fig)
-                
-                # Step 2: Feature Selection
-                st.subheader("Step 2: Select Top Features for Modeling")
-                n_top_features = st.slider(
-                    f"Number of top features to select for {target_col}",
-                    min_value=5,
-                    max_value=min(20, X_full.shape[1]),
-                    value=10,
-                    step=1
-                )
-                
-                # Use Mutual Information for feature selection
+                ranking_results = rank_features_multi_method(X_numeric, y, n_top=15)
+            
+            # Display results
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.write("**Mutual Information:**")
                 if "Mutual Information" in ranking_results and not ranking_results["Mutual Information"].empty:
-                    top_features_mi = ranking_results["Mutual Information"].head(n_top_features)["Feature"].tolist()
-                    st.write(f"**Selected {len(top_features_mi)} features (based on Mutual Information):**")
-                    st.write(top_features_mi)
-                    
-                    # Create feature-selected dataset
-                    X_selected = X_full[top_features_mi].copy()
-                else:
-                    st.warning("Using all features (MI not available).")
-                    X_selected = X_full.copy()
+                    st.dataframe(ranking_results["Mutual Information"], use_container_width=True, height=400)
+            
+            with col2:
+                st.write("**Chi-squared:**")
+                if "Chi-squared" in ranking_results and not ranking_results["Chi-squared"].empty:
+                    st.dataframe(ranking_results["Chi-squared"], use_container_width=True, height=400)
+            
+            with col3:
+                st.write("**Random Forest:**")
+                if "Random Forest" in ranking_results and not ranking_results["Random Forest"].empty:
+                    st.dataframe(ranking_results["Random Forest"], use_container_width=True, height=400)
+            
+            # Visualization
+            if ranking_results:
+                st.pyplot(plot_feature_ranking_comparison(ranking_results, target_col))
+            
+            # Model Training
+            st.subheader("Classification Model Performance")
+            
+            (X_train, X_test, y_train, y_test), used_stratify, final_test_size = safe_train_test_split(
+                X, y, test_size=test_size, random_state=42
+            )
+            
+            st.write(f"Train shape: {X_train.shape}, Test shape: {X_test.shape}")
+            
+            with st.spinner("Training models..."):
+                preprocessor = build_preprocess_pipeline_cached(df_raw, drop_cols_for_model)
+                models = build_models_fast(fast_mode)
                 
-                # Step 3: Train-Test Split
-                st.subheader("Step 3: Train-Test Split")
+                metrics_list = []
+                for model_name, model in models.items():
+                    try:
+                        pipe = Pipeline(steps=[
+                            ("prep", preprocessor),
+                            ("model", model),
+                        ])
+                        pipe.fit(X_train, y_train)
+                        y_pred = pipe.predict(X_test)
+                        
+                        metrics_list.append({
+                            "Model": model_name,
+                            "Accuracy": accuracy_score(y_test, y_pred),
+                            "Precision (weighted)": precision_score(y_test, y_pred, average="weighted", zero_division=0),
+                            "Recall (weighted)": recall_score(y_test, y_pred, average="weighted", zero_division=0),
+                            "F1-score (weighted)": f1_score(y_test, y_pred, average="weighted", zero_division=0),
+                        })
+                    except Exception as e:
+                        st.warning(f"Model {model_name} failed: {e}")
                 
-                (X_train, X_test, y_train, y_test), used_stratify, final_test_size = safe_train_test_split(
-                    X_selected, y_full, test_size=test_size, random_state=42
-                )
-                
-                st.info(f"✅ {split_note_split_msg := ('Stratified' if used_stratify else 'Non-stratified')} split used")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Train set size", X_train.shape)
-                with col2:
-                    st.metric("Test set size", X_test.shape)
-                
-                # Step 4: Train Classification Models
-                st.subheader("Step 4: Train Classification Models")
-                
-                with st.spinner(f"Training models for {target_col}..."):
-                    # Prepare data for modeling
-                    preprocessor = build_preprocess_pipeline_cached(df_raw, drop_cols_for_model)
-                    models = build_models_fast(fast_mode)
-                    
-                    metrics_list = []
-                    
-                    for model_name, model in models.items():
-                        try:
-                            pipe = Pipeline(steps=[
-                                ("prep", preprocessor),
-                                ("model", model),
-                            ])
-                            
-                            pipe.fit(X_train, y_train)
-                            y_pred = pipe.predict(X_test)
-                            
-                            metrics_list.append({
-                                "Model": model_name,
-                                "Accuracy": accuracy_score(y_test, y_pred),
-                                "Precision (weighted)": precision_score(y_test, y_pred, average="weighted", zero_division=0),
-                                "Recall (weighted)": recall_score(y_test, y_pred, average="weighted", zero_division=0),
-                                "F1-score (weighted)": f1_score(y_test, y_pred, average="weighted", zero_division=0),
-                            })
-                        except Exception as e:
-                            st.warning(f"Model {model_name} failed: {e}")
-                    
-                    if metrics_list:
-                        metrics_df = pd.DataFrame(metrics_list).set_index("Model")
-                    else:
-                        metrics_df = pd.DataFrame()
-                
-                # Step 5: Evaluate Models
-                st.subheader("Step 5: Model Performance Evaluation")
-                
-                if not metrics_df.empty:
-                    st.write(f"**Performance Metrics for {target_col}:**")
+                if metrics_list:
+                    metrics_df = pd.DataFrame(metrics_list).set_index("Model")
                     st.dataframe(metrics_df.round(4), use_container_width=True)
-                    
-                    # Visualization
-                    fig = plot_metrics_bar(metrics_df, f"({target_col})")
-                    st.pyplot(fig)
-                    
-                    # Summary insights
-                    st.subheader("Model Performance Summary")
-                    best_model_acc = metrics_df["Accuracy"].i
+                    st.pyplot(plot_metrics_bar(metrics_df, f"({target_col})"))
+
+        with tab_rt:
+            if TARGET_RISK_TYPE in df_raw.columns:
+                run_feature_analysis(TARGET_RISK_TYPE)
+            else:
+                st.warning(f"{TARGET_RISK_TYPE} not found in dataset.")
+
+        with tab_rl:
+            if TARGET_RISK_LEVEL in df_raw.columns:
+                run_feature_analysis(TARGET_RISK_LEVEL)
+            else:
+                st.warning(f"{TARGET_RISK_LEVEL} not found in dataset.")
+
+    # -------------------- PAGE 4 --------------------
+    elif page == "Classification Modeling (Tasks 4, 5 & 7)":
+        st.header("Classification Modeling (Tasks 4, 5 & 7)")
+        tab1, tab2 = st.tabs(["Risk_Type", "Risk_Level"])
+
+        with tab1:
+            if TARGET_RISK_TYPE not in df_raw.columns:
+                st.warning("Risk_Type column not found.")
+            else:
+                st.subheader("Models for Risk-Type (Holdout split)")
+                with st.spinner("Training models (cached)."):
+                    _, metrics_rt, split_info_rt, split_note_rt = train_holdout_models_cached(
+                        df_raw, TARGET_RISK_TYPE, test_size, drop_cols_for_model, fast_mode, use_smote=False
+                    )
+                st.dataframe(metrics_rt.round(3))
+                st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type)"))
+                st.info(split_note_rt)
+
+        with tab2:
+            if TARGET_RISK_LEVEL not in df_raw.columns:
+                st.warning("Risk_Level column not found.")
+            else:
+                st.subheader("Models for Risk-Level (Holdout split)")
+                with st.spinner("Training models (cached)."):
+                    _, metrics_rl, split_info_rl, split_note_rl = train_holdout_models_cached(
+                        df_raw, TARGET_RISK_LEVEL, test_size, drop_cols_for_model, fast_mode, use_smote=False
+                    )
+                st.dataframe(metrics_rl.round(3))
+                st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level)"))
+                st.info(split_note_rl)
+
+    # -------------------- PAGE 5 --------------------
+    elif page == "Cross Validation (K-Fold)":
+        st.header("Cross Validation (K-Fold) for Classification Model")
+
+        target = TARGET_RISK_TYPE
+        model_name = "Logistic Regression"
+        
+        n_splits = st.slider("Number of folds (k)", min_value=3, max_value=5, value=3, step=1)
+        stratified = st.checkbox("Use Stratified K-Fold", value=True)
+
+        if len(df_raw) > 500:
+            st.warning(f"Dataset has {len(df_raw)} rows. Sampling 500 rows for efficient CV.")
+            df_cv = df_raw.sample(500, random_state=42).reset_index(drop=True)
+        else:
