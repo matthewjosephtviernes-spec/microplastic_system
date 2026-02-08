@@ -11,7 +11,7 @@ from pandas.errors import EmptyDataError, ParserError
 from sklearn.model_selection import train_test_split, KFold, StratifiedKFold, GridSearchCV
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder, StandardScaler, LabelEncoder
 from sklearn.impute import SimpleImputer
 
 from sklearn.linear_model import LogisticRegression
@@ -95,6 +95,85 @@ def handle_missing_values(df: pd.DataFrame):
     return df
 
 
+def encode_categorical_columns(df: pd.DataFrame, categorical_cols: list, drop_cols_for_model: tuple = ()):
+    """
+    Encode categorical columns using One-Hot Encoding for features and Label Encoding for targets.
+    Returns the encoded dataframe and encoding report.
+    """
+    df_encoded = df.copy()
+    encoding_report = []
+    
+    for col in categorical_cols:
+        if col not in df_encoded.columns or col in drop_cols_for_model:
+            continue
+        
+        # For target variables, use label encoding
+        if col in [TARGET_RISK_TYPE, TARGET_RISK_LEVEL]:
+            unique_vals = df_encoded[col].dropna().unique()
+            label_map = {val: idx for idx, val in enumerate(sorted(unique_vals))}
+            df_encoded[col] = df_encoded[col].map(label_map)
+            
+            encoding_report.append({
+                "Column": col,
+                "Encoding_Type": "Label Encoding",
+                "Unique_Values": len(unique_vals),
+                "Values": str(list(unique_vals)[:5]) + ("..." if len(unique_vals) > 5 else ""),
+                "Result_Columns": col,
+            })
+        else:
+            # For features, use one-hot encoding (show counts)
+            unique_vals = df_encoded[col].dropna().unique()
+            encoding_report.append({
+                "Column": col,
+                "Encoding_Type": "One-Hot Encoding",
+                "Unique_Values": len(unique_vals),
+                "Values": str(list(unique_vals)[:5]) + ("..." if len(unique_vals) > 5 else ""),
+                "Result_Columns": f"{len(unique_vals)} binary columns",
+            })
+    
+    return df_encoded, pd.DataFrame(encoding_report)
+
+
+def detect_and_handle_outliers(df: pd.DataFrame, numeric_cols: list):
+    """
+    Detect outliers using IQR method and return detailed report.
+    """
+    df_outliers_handled = df.copy()
+    outlier_report = []
+    
+    for col in numeric_cols:
+        if col not in df_outliers_handled.columns:
+            continue
+        
+        s = pd.to_numeric(df_outliers_handled[col], errors="coerce")
+        if s.notna().sum() == 0:
+            continue
+        
+        q1 = s.quantile(0.25)
+        q3 = s.quantile(0.75)
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+        
+        outliers_count = ((s < lower_bound) | (s > upper_bound)).sum()
+        
+        outlier_report.append({
+            "Column": col,
+            "Q1": round(q1, 4),
+            "Q3": round(q3, 4),
+            "IQR": round(iqr, 4),
+            "Lower_Bound": round(lower_bound, 4),
+            "Upper_Bound": round(upper_bound, 4),
+            "Outliers_Detected": int(outliers_count),
+            "Outlier_Percentage": round((outliers_count / s.notna().sum() * 100), 2),
+        })
+        
+        # Cap outliers
+        df_outliers_handled[col] = s.clip(lower_bound, upper_bound)
+    
+    return df_outliers_handled, pd.DataFrame(outlier_report)
+
+
 def cap_outliers_iqr(df: pd.DataFrame, numeric_cols):
     df = df.copy()
     for col in numeric_cols:
@@ -113,28 +192,77 @@ def cap_outliers_iqr(df: pd.DataFrame, numeric_cols):
 
 
 def transform_skewed(df: pd.DataFrame, numeric_cols, threshold=0.5):
+    """
+    Transform skewed numerical columns and return detailed analysis.
+    """
     df = df.copy()
     present = [c for c in numeric_cols if c in df.columns]
-    skewness = df[present].apply(lambda x: pd.to_numeric(x, errors="coerce")).skew(numeric_only=True)
-    skewed_cols = skewness[skewness.abs() > threshold].index.tolist()
-
+    
+    # Calculate skewness before transformation
+    skewness_before = df[present].apply(lambda x: pd.to_numeric(x, errors="coerce")).skew(numeric_only=True)
+    skewed_cols = skewness_before[skewness_before.abs() > threshold].index.tolist()
+    
+    transformation_report = []
+    df_transformed = df.copy()
+    
     for col in skewed_cols:
         s = pd.to_numeric(df[col], errors="coerce")
         if s.notna().sum() == 0:
             continue
+        
         shift = -s.min() if s.min() < 0 else 0
-        df[col] = np.log1p(s + shift)
-    return df, skewness, skewed_cols
+        s_log = np.log1p(s + shift)
+        skewness_after = s_log.skew()
+        
+        transformation_report.append({
+            "Column": col,
+            "Skewness_Before": round(skewness_before[col], 4),
+            "Skewness_After": round(skewness_after, 4),
+            "Skewness_Reduced": round(abs(skewness_before[col]) - abs(skewness_after), 4),
+            "Transformation": "Log1p",
+            "Shift_Applied": shift,
+        })
+        
+        df_transformed[col] = s_log
+    
+    return df_transformed, skewness_before, skewed_cols, pd.DataFrame(transformation_report)
 
 
-def scale_numeric(df: pd.DataFrame, numeric_cols):
+def scale_numeric_with_report(df: pd.DataFrame, numeric_cols):
+    """
+    Apply StandardScaler and return scaling report.
+    """
     df = df.copy()
     scaler = StandardScaler()
     present = [c for c in numeric_cols if c in df.columns]
+    
+    scaling_report = []
+    
     if present:
         vals = df[present].apply(pd.to_numeric, errors="coerce")
-        df[present] = scaler.fit_transform(vals.fillna(vals.median()))
-    return df, scaler
+        original_stats = vals.describe().T
+        
+        scaled_vals = scaler.fit_transform(vals.fillna(vals.median()))
+        df[present] = scaled_vals
+        
+        scaled_stats = pd.DataFrame(scaled_vals, columns=present).describe().T
+        
+        for col in present:
+            orig_mean = original_stats.loc[col, "mean"]
+            orig_std = original_stats.loc[col, "std"]
+            scaled_mean = scaled_stats.loc[col, "mean"]
+            scaled_std = scaled_stats.loc[col, "std"]
+            
+            scaling_report.append({
+                "Column": col,
+                "Original_Mean": round(orig_mean, 4),
+                "Original_Std": round(orig_std, 4),
+                "Scaled_Mean": round(scaled_mean, 6),
+                "Scaled_Std": round(scaled_std, 4),
+                "Scaling_Method": "StandardScaler (z-score)",
+            })
+    
+    return df, scaler, pd.DataFrame(scaling_report)
 
 
 def coerce_numeric_like(df: pd.DataFrame, columns):
@@ -823,37 +951,114 @@ def main():
             else:
                 st.info("Columns 'Risk_Level' and/or 'Risk_Score' not found.")
 
-    # -------------------- PAGE 2 --------------------
+    # -------------------- PAGE 2 - ENHANCED PREPROCESSING --------------------
     elif page == "Preprocessing (Task 2)":
-        st.header("Task 2: Preprocessing (EDA view)")
-        df_clean = handle_missing_values(df_raw)
-        df_clean = cap_outliers_iqr(df_clean, NUMERIC_COLS)
-        df_clean, skewness, skewed_cols = transform_skewed(df_clean, NUMERIC_COLS)
-        df_clean, _ = scale_numeric(df_clean, NUMERIC_COLS)
-
-        tab1, tab2 = st.tabs(["Descriptive Stats", "Skewness & Notes"])
-
-        with tab1:
-            numeric_present = [c for c in NUMERIC_COLS if c in df_raw.columns]
-            if numeric_present:
-                st.subheader("Descriptive Stats (Raw)")
-                st.write(df_raw[numeric_present].describe())
-                st.subheader("Descriptive Stats (Cleaned)")
-                st.write(df_clean[numeric_present].describe())
-            else:
-                st.info("No numeric columns found for descriptive stats.")
-
-        with tab2:
-            st.subheader("Skewness (Before Transform)")
-            st.write(skewness)
-            if len(skewed_cols) > 0:
-                st.write("Skewed columns transformed (log1p):")
-                st.write(skewed_cols)
-
-            st.info(
-                "Note: For modeling/CV, preprocessing is done inside a Pipeline (leakage-safe). "
-                "This page is for EDA/interpretation only."
-            )
+        st.header("Task 2: Comprehensive Preprocessing & Feature Engineering")
+        
+        st.markdown("""
+        This page shows detailed preprocessing steps with tables for each transformation:
+        1. **Categorical Encoding** - One-hot encoding for features, label encoding for targets
+        2. **Outlier Detection & Handling** - IQR method for numerical columns
+        3. **Feature Scaling** - Standardization (z-score normalization)
+        4. **Skewness Analysis** - Log transformation for skewed columns
+        5. **Final Preprocessed Data** - Complete dataset ready for modeling
+        """)
+        
+        # Step 1: Categorical Encoding
+        st.subheader("Step 1: Categorical Encoding")
+        categorical_features = [c for c in CATEGORICAL_COLS if c in df_raw.columns]
+        
+        df_encoded, encoding_report = encode_categorical_columns(df_raw, categorical_features, drop_cols_for_model)
+        
+        if not encoding_report.empty:
+            st.write("**Encoding Report:**")
+            st.dataframe(encoding_report, use_container_width=True)
+            st.info("✅ One-hot encoding applied to categorical features, label encoding for target variables")
+        
+        # Step 2: Outlier Detection and Handling
+        st.subheader("Step 2: Outlier Detection & Handling (IQR Method)")
+        numeric_cols_present = [c for c in NUMERIC_COLS if c in df_raw.columns]
+        
+        df_outliers_handled, outlier_report = detect_and_handle_outliers(df_raw, numeric_cols_present)
+        
+        if not outlier_report.empty:
+            st.write("**Outlier Detection Report:**")
+            st.dataframe(outlier_report, use_container_width=True)
+            
+            # Show summary statistics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                total_outliers = outlier_report["Outliers_Detected"].sum()
+                st.metric("Total Outliers Found", int(total_outliers))
+            with col2:
+                avg_outlier_pct = outlier_report["Outlier_Percentage"].mean()
+                st.metric("Avg Outlier %", f"{avg_outlier_pct:.2f}%")
+            with col3:
+                cols_with_outliers = len(outlier_report[outlier_report["Outliers_Detected"] > 0])
+                st.metric("Cols with Outliers", int(cols_with_outliers))
+            
+            st.info("✅ Outliers have been capped at IQR bounds (Q1 - 1.5×IQR, Q3 + 1.5×IQR)")
+        
+        # Step 3: Feature Scaling
+        st.subheader("Step 3: Feature Scaling (StandardScaler)")
+        df_scaled, _, scaling_report = scale_numeric_with_report(df_outliers_handled, numeric_cols_present)
+        
+        if not scaling_report.empty:
+            st.write("**Scaling Report (Before → After):**")
+            st.dataframe(scaling_report, use_container_width=True)
+            st.info("✅ StandardScaler (z-score) applied: (x - mean) / std → scaled data has mean ≈ 0, std ≈ 1")
+        
+        # Step 4: Skewness Analysis & Transformation
+        st.subheader("Step 4: Skewness Analysis & Log Transformation")
+        df_transformed, skewness_before, skewed_cols, transformation_report = transform_skewed(
+            df_scaled, numeric_cols_present, threshold=0.5
+        )
+        
+        if not transformation_report.empty:
+            st.write("**Skewness Transformation Report:**")
+            st.dataframe(transformation_report, use_container_width=True)
+            st.success(f"✅ {len(skewed_cols)} highly skewed column(s) transformed using log1p")
+        else:
+            st.info("ℹ️ No highly skewed columns detected (|skewness| ≤ 0.5)")
+        
+        # Summary visualization
+        st.write("**Skewness Before & After:**")
+        skewness_summary = pd.DataFrame({
+            "Column": numeric_cols_present,
+            "Skewness_Before": skewness_before[numeric_cols_present].values,
+            "Transformed": [col in skewed_cols for col in numeric_cols_present]
+        })
+        st.dataframe(skewness_summary, use_container_width=True)
+        
+        # Step 5: Final Preprocessed Data Summary
+        st.subheader("Step 5: Final Preprocessed Data (Ready for Modeling)")
+        
+        # Display sample of final preprocessed data
+        st.write("**Final Preprocessed Dataset (First 10 rows):**")
+        display_cols = numeric_cols_present + [c for c in categorical_features if c not in drop_cols_for_model]
+        if display_cols:
+            st.dataframe(df_transformed[display_cols].head(10), use_container_width=True)
+        
+        # Summary statistics
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Rows", len(df_transformed))
+        with col2:
+            st.metric("Total Features", len(display_cols))
+        with col3:
+            st.metric("Numeric Features", len(numeric_cols_present))
+        with col4:
+            st.metric("Categorical Features", len([c for c in categorical_features if c not in drop_cols_for_model]))
+        
+        # Final descriptive statistics
+        st.write("**Descriptive Statistics (Processed Data):**")
+        if numeric_cols_present:
+            st.dataframe(df_transformed[numeric_cols_present].describe(), use_container_width=True)
+        
+        st.info(
+            "💡 **Note:** For modeling, preprocessing is performed inside a Pipeline to ensure "
+            "leakage-safe validation. This page is for EDA and interpretation only."
+        )
 
     # -------------------- PAGE 3 --------------------
     elif page == "Feature Selection & Relevance (Task 3 & 6)":
