@@ -18,7 +18,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from sklearn.feature_selection import mutual_info_classif, chi2, SelectKBest
+from sklearn.feature_selection import mutual_info_classif, chi2
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.preprocessing._encoders")
@@ -263,86 +263,71 @@ def coerce_numeric_like(df: pd.DataFrame, columns):
 
 
 # -------------------------------------------------------
-# ENHANCED FEATURE SELECTION METHODS
+# FEATURE SELECTION METHODS
 # -------------------------------------------------------
-def perform_enhanced_feature_selection(df: pd.DataFrame, target_col: str, n_top_features: int = 20):
-    """
-    Perform comprehensive feature selection with one-hot encoding.
-    Returns MI scores, Chi2 scores, and RF importances.
-    """
-    
-    # Create a copy for encoding
-    df_work = df.copy()
-    
-    # Remove rows with missing target
-    df_work = df_work[df_work[target_col].notna()]
-    
-    if len(df_work) == 0:
-        st.error(f"No valid data for {target_col}")
-        return None, None, None
-    
-    # Identify categorical columns to encode
-    cat_cols = [c for c in CATEGORICAL_COLS if c in df_work.columns and c != target_col]
-    
-    # One-hot encode categorical columns
-    df_encoded = pd.get_dummies(df_work, columns=cat_cols, drop_first=True)
-    
-    # Separate features and target
-    y = df_encoded[target_col].copy()
-    
-    # Identify one-hot encoded columns (new columns from encoding)
-    original_cols = df_work.columns.tolist()
-    if target_col in original_cols:
-        original_cols.remove(target_col)
-    
-    ohe_cols = [col for col in df_encoded.columns if col not in original_cols]
-    
-    # Add numeric columns that weren't in the original list
-    numeric_features = [c for c in NUMERIC_COLS if c in df_work.columns]
-    
-    X_cols = numeric_features + ohe_cols
-    X = df_encoded[X_cols].copy()
-    
-    # Handle missing values
-    X = X.fillna(X.median(numeric_only=True))
-    
-    if len(X) == 0 or X.shape[1] == 0:
-        st.error("No features available after encoding")
-        return None, None, None
-    
-    results = {}
-    
-    # 1. Mutual Information
+def compute_mutual_information(X: pd.DataFrame, y: pd.Series, n_top: int = 20) -> pd.DataFrame:
+    """Compute Mutual Information scores."""
     try:
         mi_scores = mutual_info_classif(X, y, random_state=42)
-        mi_df = pd.Series(mi_scores, index=X.columns, name="MI_Score").sort_values(ascending=False)
-        results["Mutual Information"] = mi_df.head(n_top_features)
+        mi_df = pd.DataFrame({
+            "Feature": X.columns,
+            "MI_Score": mi_scores,
+        }).sort_values("MI_Score", ascending=False)
+        return mi_df.head(n_top)
     except Exception as e:
-        st.warning(f"MI failed: {e}")
-        results["Mutual Information"] = pd.Series(dtype=float)
-    
-    # 2. Chi-squared Test (only works with non-negative values)
+        st.error(f"MI computation failed: {e}")
+        return pd.DataFrame()
+
+
+def compute_chi_squared(X: pd.DataFrame, y: pd.Series, n_top: int = 20) -> pd.DataFrame:
+    """Compute Chi-squared scores."""
     try:
-        # Shift values to be non-negative if needed
-        X_nonneg = X - X.min() + 1e-10
-        chi2_scores, p_values = chi2(X_nonneg, y)
-        chi2_df = pd.Series(chi2_scores, index=X.columns, name="Chi2_Score").sort_values(ascending=False)
-        results["Chi-squared"] = chi2_df.head(n_top_features)
+        X_shifted = X - X.min() + 1e-10
+        chi2_scores = chi2(X_shifted, y)[0]
+        
+        chi2_df = pd.DataFrame({
+            "Feature": X.columns,
+            "Chi2_Score": chi2_scores,
+        }).sort_values("Chi2_Score", ascending=False)
+        return chi2_df.head(n_top)
     except Exception as e:
-        st.warning(f"Chi-squared failed: {e}")
-        results["Chi-squared"] = pd.Series(dtype=float)
-    
-    # 3. Random Forest Feature Importance
+        st.warning(f"Chi-squared computation failed: {e}")
+        return pd.DataFrame()
+
+
+def compute_rf_importance(X: pd.DataFrame, y: pd.Series, n_top: int = 20, n_estimators: int = 200) -> pd.DataFrame:
+    """Compute Random Forest feature importance."""
     try:
-        rf = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+        rf = RandomForestClassifier(n_estimators=n_estimators, random_state=42, n_jobs=-1)
         rf.fit(X, y)
-        rf_df = pd.Series(rf.feature_importances_, index=X.columns, name="RF_Importance").sort_values(ascending=False)
-        results["Random Forest"] = rf_df.head(n_top_features)
+        
+        rf_df = pd.DataFrame({
+            "Feature": X.columns,
+            "RF_Importance": rf.feature_importances_,
+        }).sort_values("RF_Importance", ascending=False)
+        return rf_df.head(n_top)
     except Exception as e:
-        st.warning(f"Random Forest failed: {e}")
-        results["Random Forest"] = pd.Series(dtype=float)
+        st.error(f"RF importance computation failed: {e}")
+        return pd.DataFrame()
+
+
+def rank_features_multi_method(X: pd.DataFrame, y: pd.Series, n_top: int = 15) -> dict:
+    """Rank features using multiple methods."""
+    results = {}
     
-    return results, X, y
+    st.info("Computing Mutual Information scores...")
+    mi_scores = compute_mutual_information(X, y, n_top=n_top)
+    results["Mutual Information"] = mi_scores
+    
+    st.info("Computing Chi-squared scores...")
+    chi2_scores = compute_chi_squared(X, y, n_top=n_top)
+    results["Chi-squared"] = chi2_scores
+    
+    st.info("Computing Random Forest feature importance...")
+    rf_scores = compute_rf_importance(X, y, n_top=n_top, n_estimators=200)
+    results["Random Forest"] = rf_scores
+    
+    return results
 
 
 # -------------------------------------------------------
@@ -892,14 +877,12 @@ def plot_feature_ranking_comparison(ranking_results: dict, target_col: str):
     methods = ["Mutual Information", "Chi-squared", "Random Forest"]
     for idx, (ax, method) in enumerate(zip(axes, methods)):
         if method in ranking_results and not ranking_results[method].empty:
-            data = ranking_results[method]
-            if len(data) > 0:
-                data_sorted = data.sort_values()
-                ax.barh(data_sorted.index, data_sorted.values, color="steelblue")
-                ax.set_title(f"{method}\n{target_col}")
-                ax.set_xlabel("Score")
-            else:
-                ax.text(0.5, 0.5, f"No data for {method}", ha="center", va="center")
+            df = ranking_results[method].iloc[:10]
+            score_col = [c for c in df.columns if c != "Feature"][0]
+            df_sorted = df.sort_values(score_col)
+            ax.barh(df_sorted["Feature"], df_sorted[score_col], color="steelblue")
+            ax.set_title(f"{method}\n{target_col}")
+            ax.set_xlabel("Score")
         else:
             ax.text(0.5, 0.5, f"No data for {method}", ha="center", va="center")
     
@@ -945,7 +928,7 @@ def main():
 
         ✅ Modeling + CV are leakage-safe (Pipeline does preprocessing inside train/CV folds).  
         ✅ OneHotEncoder safely handles unknown categories with `handle_unknown='ignore'`.  
-        ✅ Enhanced feature selection using MI, Chi-squared, and Random Forest.
+        ✅ Multi-method feature selection using MI, Chi-squared, and Random Forest.
         """
     )
 
@@ -967,7 +950,7 @@ def main():
             "Classification Modeling (Tasks 4, 5 & 7)",
             "Cross Validation (K-Fold)",
         ],
-        "⚙��� Optimization": [
+        "⚙️ Optimization": [
             "SMOTE & Hyperparameter Tuning (Risk_Type)",
         ],
     }
@@ -1003,7 +986,7 @@ def main():
     drop_location_author = st.sidebar.checkbox(
         "Drop Location & Author for modeling/CV (speeds up a lot)",
         value=True,
-        help="These columns have many unique values and cause huge one-hot matrices."
+        help="These columns have many unique values and cause huge one-hot matrices. Keep them for EDA, drop for modeling."
     )
     drop_cols_for_model = tuple(DEFAULT_MODEL_DROP_COLS) if drop_location_author else tuple()
 
@@ -1050,21 +1033,21 @@ def main():
 
         with tab2:
             if "Risk_Score" in df_raw.columns:
-                st.subheader("Distribution of Risk_Score")
+                st.subheader("Distribution of Risk_Score (Histogram & Boxplot)")
                 st.pyplot(plot_hist_box(df_raw, "Risk_Score"))
             else:
-                st.info("Column 'Risk_Score' not found.")
+                st.info("Column 'Risk_Score' not found in the dataset.")
 
         with tab3:
             if "MP_Count_per_L" in df_raw.columns and "Risk_Score" in df_raw.columns:
-                st.subheader("MP_Count vs Risk_Score")
+                st.subheader("Relationship between Risk_Score and MP_Count_per_L")
                 st.pyplot(plot_scatter(df_raw, "MP_Count_per_L", "Risk_Score"))
             else:
-                st.info("Columns not found.")
+                st.info("Columns 'MP_Count_per_L' and/or 'Risk_Score' not found.")
 
         with tab4:
             if "Risk_Level" in df_raw.columns and "Risk_Score" in df_raw.columns:
-                st.subheader("Risk_Score by Risk_Level")
+                st.subheader("Difference in Risk_Score by Risk_Level (Boxplot)")
                 st.pyplot(
                     plot_box_by_category_readable(
                         df_raw,
@@ -1076,11 +1059,20 @@ def main():
                     )
                 )
             else:
-                st.info("Columns not found.")
+                st.info("Columns 'Risk_Level' and/or 'Risk_Score' not found.")
 
     # -------------------- PAGE 2 - PREPROCESSING --------------------
     elif page == "Preprocessing (Task 2)":
-        st.header("Task 2: Preprocessing & Feature Engineering")
+        st.header("Task 2: Comprehensive Preprocessing & Feature Engineering")
+        
+        st.markdown("""
+        This page shows detailed preprocessing steps:
+        1. **Categorical Encoding** - One-hot encoding for features
+        2. **Outlier Detection** - IQR method for numerical columns
+        3. **Feature Scaling** - Standardization (z-score)
+        4. **Skewness Analysis** - Log transformation
+        5. **Final Preprocessed Data** - Ready for modeling
+        """)
         
         st.subheader("Step 1: Categorical Encoding")
         categorical_features = [c for c in CATEGORICAL_COLS if c in df_raw.columns]
@@ -1090,19 +1082,30 @@ def main():
         if not encoding_report.empty:
             st.write("**Encoding Report:**")
             st.dataframe(encoding_report, use_container_width=True)
+            st.info("✅ One-hot encoding applied to categorical features")
         
-        st.subheader("Step 2: Outlier Detection")
+        st.subheader("Step 2: Outlier Detection & Handling")
         numeric_cols_present = [c for c in NUMERIC_COLS if c in df_raw.columns]
         
         df_outliers_handled, outlier_report = detect_and_handle_outliers(df_raw, numeric_cols_present)
         
         if not outlier_report.empty:
+            st.write("**Outlier Detection Report:**")
             st.dataframe(outlier_report, use_container_width=True)
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Outliers", int(outlier_report["Outliers_Detected"].sum()))
+            with col2:
+                st.metric("Avg Outlier %", f"{outlier_report['Outlier_Percentage'].mean():.2f}%")
+            with col3:
+                st.metric("Cols with Outliers", int(len(outlier_report[outlier_report["Outliers_Detected"] > 0])))
         
         st.subheader("Step 3: Feature Scaling")
         df_scaled, _, scaling_report = scale_numeric_with_report(df_outliers_handled, numeric_cols_present)
         
         if not scaling_report.empty:
+            st.write("**Scaling Report:**")
             st.dataframe(scaling_report, use_container_width=True)
         
         st.subheader("Step 4: Skewness Analysis")
@@ -1111,64 +1114,71 @@ def main():
         )
         
         if not transformation_report.empty:
+            st.write("**Transformation Report:**")
             st.dataframe(transformation_report, use_container_width=True)
+        
+        st.info("💡 For modeling, preprocessing is done inside Pipeline to ensure leakage-safe validation.")
 
-    # -------------------- PAGE 3 - ENHANCED FEATURE SELECTION --------------------
+    # -------------------- PAGE 3 - FEATURE SELECTION --------------------
     elif page == "Feature Selection & Relevance (Task 3 & 6)":
-        st.header("Tasks 3 & 6: Enhanced Feature Selection & Relevance")
+        st.header("Tasks 3 & 6: Feature Selection & Relevance")
         
         st.markdown("""
         **Feature Selection Methods:**
-        - Mutual Information (MI)
-        - Chi-squared Test
-        - Random Forest Importance
+        - Mutual Information, Chi-squared, Random Forest Importance
         
         **Classification Models:**
-        - Logistic Regression
-        - Random Forest
-        - Gradient Boosting
+        - Logistic Regression, Random Forest, Gradient Boosting
         """)
         
         tab_rt, tab_rl = st.tabs([TARGET_RISK_TYPE, TARGET_RISK_LEVEL])
 
-        def run_enhanced_feature_analysis(target_col: str):
-            st.write(f"### Analyzing {target_col}")
-            
-            with st.spinner(f"Performing feature selection for {target_col}..."):
-                ranking_results, X, y = perform_enhanced_feature_selection(df_raw, target_col, n_top_features=20)
-            
-            if ranking_results is None:
+        def run_feature_analysis(target_col: str):
+            try:
+                X, y = get_Xy_for_target(df_raw, target_col, drop_cols_for_model)
+            except Exception as e:
+                st.error(f"Error: {e}")
                 return
             
+            if y.nunique() < 2:
+                st.warning(f"Not enough classes in {target_col}")
+                return
+
             st.write(f"**Data:** {X.shape[0]} samples × {X.shape[1]} features")
             st.write(f"**Classes:** {dict(y.value_counts())}")
 
             st.subheader("Feature Ranking Results")
             
+            with st.spinner("Computing rankings..."):
+                X_numeric = X.copy()
+                for col in X_numeric.columns:
+                    if X_numeric[col].dtype == "object":
+                        le = LabelEncoder()
+                        X_numeric[col] = le.fit_transform(X_numeric[col].astype(str))
+                
+                ranking_results = rank_features_multi_method(X_numeric, y, n_top=15)
+            
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                st.write("**Mutual Information**")
+                st.write("**Mutual Information:**")
                 if "Mutual Information" in ranking_results and not ranking_results["Mutual Information"].empty:
-                    mi_df = ranking_results["Mutual Information"].to_frame("Score")
-                    st.dataframe(mi_df, height=400)
+                    st.dataframe(ranking_results["Mutual Information"], height=400)
             
             with col2:
-                st.write("**Chi-squared**")
+                st.write("**Chi-squared:**")
                 if "Chi-squared" in ranking_results and not ranking_results["Chi-squared"].empty:
-                    chi2_df = ranking_results["Chi-squared"].to_frame("Score")
-                    st.dataframe(chi2_df, height=400)
+                    st.dataframe(ranking_results["Chi-squared"], height=400)
             
             with col3:
-                st.write("**Random Forest**")
+                st.write("**Random Forest:**")
                 if "Random Forest" in ranking_results and not ranking_results["Random Forest"].empty:
-                    rf_df = ranking_results["Random Forest"].to_frame("Score")
-                    st.dataframe(rf_df, height=400)
+                    st.dataframe(ranking_results["Random Forest"], height=400)
             
             if ranking_results:
                 st.pyplot(plot_feature_ranking_comparison(ranking_results, target_col))
             
-            st.subheader("Classification Model Performance")
+            st.subheader("Model Performance")
             
             (X_train, X_test, y_train, y_test), used_stratify, _ = safe_train_test_split(
                 X, y, test_size=test_size, random_state=42
@@ -1205,13 +1215,13 @@ def main():
 
         with tab_rt:
             if TARGET_RISK_TYPE in df_raw.columns:
-                run_enhanced_feature_analysis(TARGET_RISK_TYPE)
+                run_feature_analysis(TARGET_RISK_TYPE)
             else:
                 st.warning(f"{TARGET_RISK_TYPE} not found")
 
         with tab_rl:
             if TARGET_RISK_LEVEL in df_raw.columns:
-                run_enhanced_feature_analysis(TARGET_RISK_LEVEL)
+                run_feature_analysis(TARGET_RISK_LEVEL)
             else:
                 st.warning(f"{TARGET_RISK_LEVEL} not found")
 
