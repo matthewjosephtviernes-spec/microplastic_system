@@ -18,7 +18,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from sklearn.feature_selection import mutual_info_classif, chi2, SelectKBest
+from sklearn.feature_selection import mutual_info_classif, chi2
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.preprocessing._encoders")
@@ -260,6 +260,74 @@ def coerce_numeric_like(df: pd.DataFrame, columns):
             s = df[c].astype(str).str.replace(",", "", regex=False)
             df[c] = pd.to_numeric(s, errors="coerce")
     return df
+
+
+# -------------------------------------------------------
+# FEATURE SELECTION METHODS
+# -------------------------------------------------------
+def compute_mutual_information(X: pd.DataFrame, y: pd.Series, n_top: int = 20) -> pd.DataFrame:
+    """Compute Mutual Information scores."""
+    try:
+        mi_scores = mutual_info_classif(X, y, random_state=42)
+        mi_df = pd.DataFrame({
+            "Feature": X.columns,
+            "MI_Score": mi_scores,
+        }).sort_values("MI_Score", ascending=False)
+        return mi_df.head(n_top)
+    except Exception as e:
+        st.error(f"MI computation failed: {e}")
+        return pd.DataFrame()
+
+
+def compute_chi_squared(X: pd.DataFrame, y: pd.Series, n_top: int = 20) -> pd.DataFrame:
+    """Compute Chi-squared scores."""
+    try:
+        X_shifted = X - X.min() + 1e-10
+        chi2_scores = chi2(X_shifted, y)[0]
+        
+        chi2_df = pd.DataFrame({
+            "Feature": X.columns,
+            "Chi2_Score": chi2_scores,
+        }).sort_values("Chi2_Score", ascending=False)
+        return chi2_df.head(n_top)
+    except Exception as e:
+        st.warning(f"Chi-squared computation failed: {e}")
+        return pd.DataFrame()
+
+
+def compute_rf_importance(X: pd.DataFrame, y: pd.Series, n_top: int = 20, n_estimators: int = 200) -> pd.DataFrame:
+    """Compute Random Forest feature importance."""
+    try:
+        rf = RandomForestClassifier(n_estimators=n_estimators, random_state=42, n_jobs=-1)
+        rf.fit(X, y)
+        
+        rf_df = pd.DataFrame({
+            "Feature": X.columns,
+            "RF_Importance": rf.feature_importances_,
+        }).sort_values("RF_Importance", ascending=False)
+        return rf_df.head(n_top)
+    except Exception as e:
+        st.error(f"RF importance computation failed: {e}")
+        return pd.DataFrame()
+
+
+def rank_features_multi_method(X: pd.DataFrame, y: pd.Series, n_top: int = 15) -> dict:
+    """Rank features using multiple methods."""
+    results = {}
+    
+    st.info("Computing Mutual Information scores...")
+    mi_scores = compute_mutual_information(X, y, n_top=n_top)
+    results["Mutual Information"] = mi_scores
+    
+    st.info("Computing Chi-squared scores...")
+    chi2_scores = compute_chi_squared(X, y, n_top=n_top)
+    results["Chi-squared"] = chi2_scores
+    
+    st.info("Computing Random Forest feature importance...")
+    rf_scores = compute_rf_importance(X, y, n_top=n_top, n_estimators=200)
+    results["Random Forest"] = rf_scores
+    
+    return results
 
 
 # -------------------------------------------------------
@@ -809,17 +877,12 @@ def plot_feature_ranking_comparison(ranking_results: dict, target_col: str):
     methods = ["Mutual Information", "Chi-squared", "Random Forest"]
     for idx, (ax, method) in enumerate(zip(axes, methods)):
         if method in ranking_results and not ranking_results[method].empty:
-            data = ranking_results[method]
-            if len(data) > 0:
-                data_sorted = data.sort_values()
-                ax.barh(range(len(data_sorted)), data_sorted.values, color="steelblue")
-                ax.set_yticks(range(len(data_sorted)))
-                ax.set_yticklabels(data_sorted.index, fontsize=9)
-                ax.set_title(f"{method}\n{target_col}")
-                ax.set_xlabel("Score")
-                ax.invert_yaxis()
-            else:
-                ax.text(0.5, 0.5, f"No data for {method}", ha="center", va="center")
+            df = ranking_results[method].iloc[:10]
+            score_col = [c for c in df.columns if c != "Feature"][0]
+            df_sorted = df.sort_values(score_col)
+            ax.barh(df_sorted["Feature"], df_sorted[score_col], color="steelblue")
+            ax.set_title(f"{method}\n{target_col}")
+            ax.set_xlabel("Score")
         else:
             ax.text(0.5, 0.5, f"No data for {method}", ha="center", va="center")
     
@@ -865,7 +928,7 @@ def main():
 
         ✅ Modeling + CV are leakage-safe (Pipeline does preprocessing inside train/CV folds).  
         ✅ OneHotEncoder safely handles unknown categories with `handle_unknown='ignore'`.  
-        ✅ Enhanced feature selection using MI, Chi-squared, and Random Forest.
+        ✅ Multi-method feature selection using MI, Chi-squared, and Random Forest.
         """
     )
 
@@ -923,7 +986,7 @@ def main():
     drop_location_author = st.sidebar.checkbox(
         "Drop Location & Author for modeling/CV (speeds up a lot)",
         value=True,
-        help="These columns have many unique values and cause huge one-hot matrices."
+        help="These columns have many unique values and cause huge one-hot matrices. Keep them for EDA, drop for modeling."
     )
     drop_cols_for_model = tuple(DEFAULT_MODEL_DROP_COLS) if drop_location_author else tuple()
 
@@ -970,21 +1033,21 @@ def main():
 
         with tab2:
             if "Risk_Score" in df_raw.columns:
-                st.subheader("Distribution of Risk_Score")
+                st.subheader("Distribution of Risk_Score (Histogram & Boxplot)")
                 st.pyplot(plot_hist_box(df_raw, "Risk_Score"))
             else:
-                st.info("Column 'Risk_Score' not found.")
+                st.info("Column 'Risk_Score' not found in the dataset.")
 
         with tab3:
             if "MP_Count_per_L" in df_raw.columns and "Risk_Score" in df_raw.columns:
-                st.subheader("MP_Count vs Risk_Score")
+                st.subheader("Relationship between Risk_Score and MP_Count_per_L")
                 st.pyplot(plot_scatter(df_raw, "MP_Count_per_L", "Risk_Score"))
             else:
-                st.info("Columns not found.")
+                st.info("Columns 'MP_Count_per_L' and/or 'Risk_Score' not found.")
 
         with tab4:
             if "Risk_Level" in df_raw.columns and "Risk_Score" in df_raw.columns:
-                st.subheader("Risk_Score by Risk_Level")
+                st.subheader("Difference in Risk_Score by Risk_Level (Boxplot)")
                 st.pyplot(
                     plot_box_by_category_readable(
                         df_raw,
@@ -996,11 +1059,20 @@ def main():
                     )
                 )
             else:
-                st.info("Columns not found.")
+                st.info("Columns 'Risk_Level' and/or 'Risk_Score' not found.")
 
     # -------------------- PAGE 2 - PREPROCESSING --------------------
     elif page == "Preprocessing (Task 2)":
-        st.header("Task 2: Preprocessing & Feature Engineering")
+        st.header("Task 2: Comprehensive Preprocessing & Feature Engineering")
+        
+        st.markdown("""
+        This page shows detailed preprocessing steps:
+        1. **Categorical Encoding** - One-hot encoding for features
+        2. **Outlier Detection** - IQR method for numerical columns
+        3. **Feature Scaling** - Standardization (z-score)
+        4. **Skewness Analysis** - Log transformation
+        5. **Final Preprocessed Data** - Ready for modeling
+        """)
         
         st.subheader("Step 1: Categorical Encoding")
         categorical_features = [c for c in CATEGORICAL_COLS if c in df_raw.columns]
@@ -1010,19 +1082,30 @@ def main():
         if not encoding_report.empty:
             st.write("**Encoding Report:**")
             st.dataframe(encoding_report, use_container_width=True)
+            st.info("✅ One-hot encoding applied to categorical features")
         
-        st.subheader("Step 2: Outlier Detection")
+        st.subheader("Step 2: Outlier Detection & Handling")
         numeric_cols_present = [c for c in NUMERIC_COLS if c in df_raw.columns]
         
         df_outliers_handled, outlier_report = detect_and_handle_outliers(df_raw, numeric_cols_present)
         
         if not outlier_report.empty:
+            st.write("**Outlier Detection Report:**")
             st.dataframe(outlier_report, use_container_width=True)
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Outliers", int(outlier_report["Outliers_Detected"].sum()))
+            with col2:
+                st.metric("Avg Outlier %", f"{outlier_report['Outlier_Percentage'].mean():.2f}%")
+            with col3:
+                st.metric("Cols with Outliers", int(len(outlier_report[outlier_report["Outliers_Detected"] > 0])))
         
         st.subheader("Step 3: Feature Scaling")
         df_scaled, _, scaling_report = scale_numeric_with_report(df_outliers_handled, numeric_cols_present)
         
         if not scaling_report.empty:
+            st.write("**Scaling Report:**")
             st.dataframe(scaling_report, use_container_width=True)
         
         st.subheader("Step 4: Skewness Analysis")
@@ -1031,377 +1114,244 @@ def main():
         )
         
         if not transformation_report.empty:
+            st.write("**Transformation Report:**")
             st.dataframe(transformation_report, use_container_width=True)
+        
+        st.info("💡 For modeling, preprocessing is done inside Pipeline to ensure leakage-safe validation.")
 
-    # ================================================================================
-    # PAGE 3: FEATURE SELECTION & RELEVANCE (Task 3 & 6) - MODIFIED VERSION
-    # ================================================================================
+    # -------------------- PAGE 3 - FEATURE SELECTION --------------------
     elif page == "Feature Selection & Relevance (Task 3 & 6)":
-        st.header("Tasks 3 & 6: Feature Selection & Relevance Analysis")
+        st.header("Tasks 3 & 6: Feature Selection & Relevance")
         
         st.markdown("""
-        ## Goal
-        Perform comprehensive feature selection to identify the most relevant features for predicting 
-        **Risk_Type** and **Risk_Level** using multiple feature selection methods.
+        **Feature Selection Methods:**
+        - Mutual Information, Chi-squared, Random Forest Importance
         
-        ---
-        
-        ## Approach
-        1. **Clarify Target Variables**: Risk_Type and Risk_Level (classification)
-        2. **Select Feature Selection Methods**: 
-           - Filter Methods: Mutual Information, Chi-squared Test
-           - Embedded Methods: Random Forest Feature Importance
-        3. **Implement Selected Methods**: Apply MI, Chi2, and RF importance
-        4. **Evaluate Results**: Analyze and compare rankings from all methods
-        5. **Apply Selection**: Create new datasets with top selected features
-        
-        ---
+        **Classification Models:**
+        - Logistic Regression, Random Forest, Gradient Boosting
         """)
         
-        # TARGET VARIABLE SELECTION
-        st.subheader("Step 1: Clarify Target Variable & Prediction Task")
-        
-        target_options = []
-        if TARGET_RISK_TYPE in df_raw.columns:
-            target_options.append(TARGET_RISK_TYPE)
-        if TARGET_RISK_LEVEL in df_raw.columns:
-            target_options.append(TARGET_RISK_LEVEL)
-        
-        if not target_options:
-            st.error("Neither Risk_Type nor Risk_Level found in the dataset.")
-            st.stop()
-        
-        target_col = st.selectbox(
-            "Select Target Variable for Feature Selection",
-            target_options,
-            help="Choose the target variable you want to predict"
-        )
-        
-        st.info(f"""
-        **Selected Target:** {target_col}
-        
-        **Prediction Task:** Multi-class Classification
-        
-        **Model Types:** Logistic Regression, Random Forest, Gradient Boosting
-        """)
-        
-        # FEATURE SELECTION METHOD DISCUSSION
-        st.subheader("Step 2: Feature Selection Methods Discussion")
-        
-        with st.expander("📚 View Feature Selection Methods", expanded=True):
-            st.markdown("""
-            ### Selected Methods:
-            
-            #### 1. **Mutual Information (Filter Method)**
-            - **Type:** Filter-based (univariate)
-            - **How it works:** Measures the dependency between each feature and the target
-            - **Advantages:** Fast, independent of model, captures non-linear relationships
-            - **Best for:** Getting a general sense of feature importance
-            
-            #### 2. **Chi-squared Test (Filter Method)**
-            - **Type:** Filter-based (statistical test)
-            - **How it works:** Tests independence between categorical features and target
-            - **Advantages:** Interpretable, mathematically rigorous
-            - **Best for:** Categorical features and discrete targets
-            - **Note:** Requires non-negative values
-            
-            #### 3. **Random Forest Feature Importance (Embedded Method)**
-            - **Type:** Embedded (model-based)
-            - **How it works:** Uses decrease in impurity to rank feature importance
-            - **Advantages:** Captures non-linear relationships, feature interactions
-            - **Best for:** Understanding how models use features
-            
-            ### Why These Methods?
-            - **Complementary:** Each method captures different aspects of feature importance
-            - **Robust:** Cross-validating results across methods increases confidence
-            - **Practical:** Suitable for both numeric and categorical data
-            """)
-        
-        # IMPLEMENT FEATURE SELECTION
-        st.subheader("Step 3: Implement Feature Selection Methods")
-        
-        # Prepare data
-        with st.spinner(f"Preparing data for {target_col}..."):
+        tab_rt, tab_rl = st.tabs([TARGET_RISK_TYPE, TARGET_RISK_LEVEL])
+
+        def run_feature_analysis(target_col: str):
             try:
-                # Create working copy
-                df_work = df_raw.copy()
-                
-                # Remove rows with missing target
-                df_work = df_work[df_work[target_col].notna()]
-                
-                if len(df_work) == 0:
-                    st.error(f"No valid data for {target_col}")
-                    st.stop()
-                
-                # Step 3a: Identify and encode categorical columns
-                st.write("**3a: Categorical Encoding**")
-                
-                cat_cols_to_encode = [c for c in CATEGORICAL_COLS if c in df_work.columns and c != target_col]
-                
-                st.write(f"Categorical columns to encode: {cat_cols_to_encode}")
-                
-                # One-hot encode
-                df_encoded = pd.get_dummies(df_work, columns=cat_cols_to_encode, drop_first=True)
-                
-                st.success(f"✅ Encoded {len(cat_cols_to_encode)} categorical columns")
-                
-                # Step 3b: Separate features and target
-                st.write("**3b: Feature-Target Separation**")
-                
-                y = df_encoded[target_col].copy()
-                
-                # Identify numeric and encoded features
-                original_cols = df_work.columns.tolist()
-                if target_col in original_cols:
-                    original_cols.remove(target_col)
-                
-                # Get one-hot encoded columns
-                ohe_cols = [col for col in df_encoded.columns if col not in original_cols]
-                
-                # Get numeric columns
-                numeric_features = [c for c in NUMERIC_COLS if c in df_work.columns]
-                
-                # Combine all feature columns
-                X_cols = numeric_features + ohe_cols
-                X = df_encoded[X_cols].copy()
-                
-                # Handle missing values
-                X = X.fillna(X.median(numeric_only=True))
-                
-                st.success(f"✅ Features shape: {X.shape}")
-                st.write(f"   - Numeric features: {len(numeric_features)}")
-                st.write(f"   - One-hot encoded features: {len(ohe_cols)}")
-                st.write(f"   - Total features: {X.shape[1]}")
-                
-                # Step 3c: Apply feature selection methods
-                st.write("**3c: Computing Feature Importance Scores**")
-                
-                progress_bar = st.progress(0)
-                
-                # Mutual Information
-                st.write("Computing Mutual Information scores...")
-                mi_scores = mutual_info_classif(X, y, random_state=42)
-                mi_df = pd.Series(mi_scores, index=X.columns, name="MI_Score").sort_values(ascending=False)
-                progress_bar.progress(33)
-                
-                # Chi-squared
-                st.write("Computing Chi-squared scores...")
-                try:
-                    X_nonneg = X - X.min() + 1e-10
-                    chi2_scores, _ = chi2(X_nonneg, y)
-                    chi2_df = pd.Series(chi2_scores, index=X.columns, name="Chi2_Score").sort_values(ascending=False)
-                except Exception as e:
-                    st.warning(f"Chi-squared computation issue: {e}")
-                    chi2_df = pd.Series(dtype=float)
-                progress_bar.progress(66)
-                
-                # Random Forest
-                st.write("Computing Random Forest feature importances...")
-                rf = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1, max_depth=15)
-                rf.fit(X, y)
-                rf_df = pd.Series(rf.feature_importances_, index=X.columns, name="RF_Importance").sort_values(ascending=False)
-                progress_bar.progress(100)
-                
-                st.success("✅ All feature importance scores computed")
-                
+                X, y = get_Xy_for_target(df_raw, target_col, drop_cols_for_model)
             except Exception as e:
-                st.error(f"Error in feature selection: {e}")
-                st.stop()
-        
-        # EVALUATE SELECTED FEATURES
-        st.subheader("Step 4: Evaluate & Analyze Selected Features")
-        
-        n_top = st.slider(
-            "Number of top features to display",
-            min_value=5,
-            max_value=30,
-            value=20,
-            step=5,
-            help="Select how many top features to show from each method"
-        )
-        
-        # Create three columns for comparison
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.write(f"### Top {n_top} Mutual Information Scores")
-            mi_top = mi_df.head(n_top).to_frame("Score")
-            st.dataframe(mi_top, use_container_width=True, height=500)
+                st.error(f"Error: {e}")
+                return
             
-            # Statistics
-            st.write("**MI Score Statistics:**")
-            st.write(f"Max: {mi_df.max():.4f}")
-            st.write(f"Mean: {mi_df.mean():.4f}")
-            st.write(f"Min: {mi_df.min():.4f}")
-        
-        with col2:
-            st.write(f"### Top {n_top} Chi-squared Scores")
-            if not chi2_df.empty:
-                chi2_top = chi2_df.head(n_top).to_frame("Score")
-                st.dataframe(chi2_top, use_container_width=True, height=500)
+            if y.nunique() < 2:
+                st.warning(f"Not enough classes in {target_col}")
+                return
+
+            st.write(f"**Data:** {X.shape[0]} samples × {X.shape[1]} features")
+            st.write(f"**Classes:** {dict(y.value_counts())}")
+
+            st.subheader("Feature Ranking Results")
+            
+            with st.spinner("Computing rankings..."):
+                X_numeric = X.copy()
+                for col in X_numeric.columns:
+                    if X_numeric[col].dtype == "object":
+                        le = LabelEncoder()
+                        X_numeric[col] = le.fit_transform(X_numeric[col].astype(str))
                 
-                st.write("**Chi2 Score Statistics:**")
-                st.write(f"Max: {chi2_df.max():.4f}")
-                st.write(f"Mean: {chi2_df.mean():.4f}")
-                st.write(f"Min: {chi2_df.min():.4f}")
-            else:
-                st.warning("Chi-squared computation did not produce results")
-        
-        with col3:
-            st.write(f"### Top {n_top} Random Forest Importance Scores")
-            rf_top = rf_df.head(n_top).to_frame("Score")
-            st.dataframe(rf_top, use_container_width=True, height=500)
+                ranking_results = rank_features_multi_method(X_numeric, y, n_top=15)
             
-            st.write("**RF Importance Statistics:**")
-            st.write(f"Max: {rf_df.max():.4f}")
-            st.write(f"Mean: {rf_df.mean():.4f}")
-            st.write(f"Min: {rf_df.min():.4f}")
-        
-        # Visualization of top features
-        st.subheader("Feature Importance Visualization")
-        
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-        
-        # MI plot
-        mi_top_plot = mi_df.head(n_top).sort_values()
-        axes[0].barh(range(len(mi_top_plot)), mi_top_plot.values, color='steelblue')
-        axes[0].set_yticks(range(len(mi_top_plot)))
-        axes[0].set_yticklabels(mi_top_plot.index, fontsize=9)
-        axes[0].set_xlabel('MI Score')
-        axes[0].set_title(f'Top {n_top} Features - Mutual Information')
-        axes[0].invert_yaxis()
-        
-        # Chi2 plot
-        if not chi2_df.empty:
-            chi2_top_plot = chi2_df.head(n_top).sort_values()
-            axes[1].barh(range(len(chi2_top_plot)), chi2_top_plot.values, color='coral')
-            axes[1].set_yticks(range(len(chi2_top_plot)))
-            axes[1].set_yticklabels(chi2_top_plot.index, fontsize=9)
-            axes[1].set_xlabel('Chi2 Score')
-            axes[1].set_title(f'Top {n_top} Features - Chi-squared')
-            axes[1].invert_yaxis()
-        else:
-            axes[1].text(0.5, 0.5, 'Chi-squared not available', ha='center', va='center')
-        
-        # RF plot
-        rf_top_plot = rf_df.head(n_top).sort_values()
-        axes[2].barh(range(len(rf_top_plot)), rf_top_plot.values, color='lightgreen')
-        axes[2].set_yticks(range(len(rf_top_plot)))
-        axes[2].set_yticklabels(rf_top_plot.index, fontsize=9)
-        axes[2].set_xlabel('RF Importance')
-        axes[2].set_title(f'Top {n_top} Features - Random Forest')
-        axes[2].invert_yaxis()
-        
-        plt.tight_layout()
-        st.pyplot(fig)
-        
-        # APPLY FEATURE SELECTION
-        st.subheader("Step 5: Apply Feature Selection & Create New Dataset")
-        
-        st.markdown("""
-        Select the number of top features to include in your new dataset. 
-        The new dataset will contain only these selected features for model training.
-        """)
-        
-        n_features_to_select = st.slider(
-            "Number of features to select for model training",
-            min_value=5,
-            max_value=min(30, X.shape[1]),
-            value=15,
-            step=1,
-            help="Features will be selected based on Mutual Information scores"
-        )
-        
-        if st.button("Create Feature-Selected Dataset", type="primary"):
-            # Get top features from MI (primary method)
-            selected_features = mi_df.head(n_features_to_select).index.tolist()
+            col1, col2, col3 = st.columns(3)
             
-            # Create new dataset
-            X_selected = X[selected_features].copy()
-            
-            st.success(f"✅ Selected {len(selected_features)} features")
-            
-            st.write("### Selected Features Table")
-            
-            # Create comprehensive results table
-            results_table = pd.DataFrame({
-                'Feature': selected_features,
-                'MI_Score': [mi_df[f] for f in selected_features],
-                'Chi2_Score': [chi2_df[f] if f in chi2_df.index else np.nan for f in selected_features],
-                'RF_Importance': [rf_df[f] for f in selected_features],
-                'MI_Rank': [mi_df.index.get_loc(f) + 1 for f in selected_features],
-                'RF_Rank': [rf_df.index.get_loc(f) + 1 for f in selected_features],
-            })
-            
-            # Sort by MI score
-            results_table = results_table.sort_values('MI_Score', ascending=False).reset_index(drop=True)
-            results_table.index = results_table.index + 1
-            
-            st.dataframe(results_table, use_container_width=True)
-            
-            # Display sample of selected dataset
-            st.write("### Sample of Feature-Selected Dataset")
-            st.dataframe(X_selected.head(10), use_container_width=True)
-            
-            # Statistics
-            col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Total Samples", X_selected.shape[0])
+                st.write("**Mutual Information:**")
+                if "Mutual Information" in ranking_results and not ranking_results["Mutual Information"].empty:
+                    st.dataframe(ranking_results["Mutual Information"], height=400)
+            
             with col2:
-                st.metric("Selected Features", X_selected.shape[1])
+                st.write("**Chi-squared:**")
+                if "Chi-squared" in ranking_results and not ranking_results["Chi-squared"].empty:
+                    st.dataframe(ranking_results["Chi-squared"], height=400)
+            
             with col3:
-                original_features = X.shape[1]
-                reduction = ((original_features - X_selected.shape[1]) / original_features * 100)
-                st.metric("Feature Reduction", f"{reduction:.1f}%")
-            with col4:
-                st.metric("Target Classes", y.nunique())
+                st.write("**Random Forest:**")
+                if "Random Forest" in ranking_results and not ranking_results["Random Forest"].empty:
+                    st.dataframe(ranking_results["Random Forest"], height=400)
             
-            st.write("### Feature Selection Summary")
-            st.markdown(f"""
-            **Dataset Information:**
-            - Original features: {X.shape[1]}
-            - Selected features: {X_selected.shape[1]}
-            - Reduction: {reduction:.1f}%
-            - Samples retained: {X_selected.shape[0]}
-            - Target variable: {target_col}
-            - Classes: {y.nunique()}
+            if ranking_results:
+                st.pyplot(plot_feature_ranking_comparison(ranking_results, target_col))
             
-            **Selection Criteria:**
-            - Primary method: Mutual Information
-            - Top features selected: {n_features_to_select}
+            st.subheader("Model Performance")
             
-            **Feature Categories:**
-            - Numeric features included: {sum(1 for f in selected_features if any(f.startswith(n) for n in numeric_features))}
-            - Categorical (one-hot encoded) features included: {sum(1 for f in selected_features if f not in numeric_features)}
-            """)
-            
-            # Export capabilities
-            st.write("### Export Selected Features")
-            
-            # Create CSV download
-            csv_buffer = X_selected.to_csv(index=False)
-            st.download_button(
-                label="Download Feature-Selected Dataset (CSV)",
-                data=csv_buffer,
-                file_name=f"selected_features_{target_col}.csv",
-                mime="text/csv"
+            (X_train, X_test, y_train, y_test), used_stratify, _ = safe_train_test_split(
+                X, y, test_size=test_size, random_state=42
             )
             
-            # Create feature list download
-            feature_list = pd.DataFrame({
-                'Feature': selected_features,
-                'Position': range(1, len(selected_features) + 1),
-                'MI_Score': [mi_df[f] for f in selected_features],
-                'RF_Rank': [rf_df.index.get_loc(f) + 1 for f in selected_features],
-            })
+            with st.spinner("Training models..."):
+                preprocessor = build_preprocess_pipeline_cached(df_raw, drop_cols_for_model)
+                models = build_models_fast(fast_mode)
+                
+                metrics_list = []
+                for model_name, model in models.items():
+                    try:
+                        pipe = Pipeline(steps=[
+                            ("prep", preprocessor),
+                            ("model", model),
+                        ])
+                        pipe.fit(X_train, y_train)
+                        y_pred = pipe.predict(X_test)
+                        
+                        metrics_list.append({
+                            "Model": model_name,
+                            "Accuracy": accuracy_score(y_test, y_pred),
+                            "Precision (weighted)": precision_score(y_test, y_pred, average="weighted", zero_division=0),
+                            "Recall (weighted)": recall_score(y_test, y_pred, average="weighted", zero_division=0),
+                            "F1-score (weighted)": f1_score(y_test, y_pred, average="weighted", zero_division=0),
+                        })
+                    except Exception as e:
+                        st.warning(f"{model_name} failed: {e}")
+                
+                if metrics_list:
+                    metrics_df = pd.DataFrame(metrics_list).set_index("Model")
+                    st.dataframe(metrics_df.round(4))
+                    st.pyplot(plot_metrics_bar(metrics_df, f"({target_col})"))
+
+        with tab_rt:
+            if TARGET_RISK_TYPE in df_raw.columns:
+                run_feature_analysis(TARGET_RISK_TYPE)
+            else:
+                st.warning(f"{TARGET_RISK_TYPE} not found")
+
+        with tab_rl:
+            if TARGET_RISK_LEVEL in df_raw.columns:
+                run_feature_analysis(TARGET_RISK_LEVEL)
+            else:
+                st.warning(f"{TARGET_RISK_LEVEL} not found")
+
+    # -------------------- PAGE 4 --------------------
+    elif page == "Classification Modeling (Tasks 4, 5 & 7)":
+        st.header("Classification Modeling")
+        tab1, tab2 = st.tabs(["Risk_Type", "Risk_Level"])
+
+        with tab1:
+            if TARGET_RISK_TYPE not in df_raw.columns:
+                st.warning("Risk_Type not found")
+            else:
+                st.subheader("Models for Risk-Type")
+                with st.spinner("Training..."):
+                    _, metrics_rt, _, split_note_rt = train_holdout_models_cached(
+                        df_raw, TARGET_RISK_TYPE, test_size, drop_cols_for_model, fast_mode, use_smote=False
+                    )
+                st.dataframe(metrics_rt.round(3))
+                st.pyplot(plot_metrics_bar(metrics_rt, "(Risk-Type)"))
+                st.info(split_note_rt)
+
+        with tab2:
+            if TARGET_RISK_LEVEL not in df_raw.columns:
+                st.warning("Risk_Level not found")
+            else:
+                st.subheader("Models for Risk-Level")
+                with st.spinner("Training..."):
+                    _, metrics_rl, _, split_note_rl = train_holdout_models_cached(
+                        df_raw, TARGET_RISK_LEVEL, test_size, drop_cols_for_model, fast_mode, use_smote=False
+                    )
+                st.dataframe(metrics_rl.round(3))
+                st.pyplot(plot_metrics_bar(metrics_rl, "(Risk-Level)"))
+                st.info(split_note_rl)
+
+    # -------------------- PAGE 5 --------------------
+    elif page == "Cross Validation (K-Fold)":
+        st.header("Cross Validation (K-Fold)")
+
+        target = TARGET_RISK_TYPE
+        model_name = "Logistic Regression"
+        st.info(f"Target: **{target}** | Model: **{model_name}**")
+        
+        n_splits = st.slider("Number of folds", min_value=3, max_value=5, value=3)
+        stratified = st.checkbox("Stratified K-Fold", value=True)
+
+        if len(df_raw) > 500:
+            st.warning(f"Sampling 500 rows for efficient CV")
+            df_cv = df_raw.sample(500, random_state=42).reset_index(drop=True)
+        else:
+            df_cv = df_raw.copy()
+
+        if st.button("Run CV", type="primary"):
+            with st.spinner(f"Running {n_splits}-Fold CV..."):
+                try:
+                    summary_df, _, cv_note = run_cv(
+                        df_raw=df_cv,
+                        target_col=target,
+                        model_name=model_name,
+                        n_splits=n_splits,
+                        stratified=stratified,
+                        drop_cols_for_model=drop_cols_for_model,
+                        fast_mode=fast_mode,
+                    )
+                    st.info(cv_note)
+                    st.subheader("CV Summary (mean ± std)")
+                    st.dataframe(summary_df.round(4))
+                except Exception as e:
+                    st.error(f"CV failed: {e}")
+
+    # -------------------- PAGE 6 --------------------
+    elif page == "Polymer Type Distribution":
+        st.header("Polymer Type Distribution")
+        df = handle_missing_values(df_raw)
+
+        if "Polymer_Type" in df.columns:
+            polymer = df["Polymer_Type"].astype(str).str.strip().replace({"": np.nan})
+            polymer = polymer.dropna()
             
-            csv_features = feature_list.to_csv(index=False)
-            st.download_button(
-                label="Download Feature List (CSV)",
-                data=csv_features,
-                file_name=f"feature_list_{target_col}.csv",
-                mime="text/csv"
-            )
-        
-        # INSIGHTS & RECOMMENDATIONS
-        
+            tabA, tabB = st.tabs(["Counts", "Plot"])
+
+            with tabA:
+                st.subheader("Polymer_Type Counts")
+                st.dataframe(polymer.value_counts())
+
+            with tabB:
+                top_n = st.slider("Top N types", 5, 30, 15)
+                fig, _ = plot_categorical_topn_bar(
+                    polymer,
+                    title=f"Polymer_Type Distribution (Top {top_n})",
+                    top_n=top_n,
+                )
+                st.pyplot(fig)
+        else:
+            st.warning("Polymer_Type not found")
+
+    # -------------------- PAGE 7 --------------------
+    elif page == "SMOTE & Hyperparameter Tuning (Risk_Type)":
+        st.header("SMOTE & Tuning (Risk_Type)")
+
+        if TARGET_RISK_TYPE not in df_raw.columns:
+            st.warning("Risk_Type not found")
+            return
+
+        if not IMBLEARN_OK:
+            st.error("Install imbalanced-learn: pip install imbalanced-learn")
+            st.stop()
+
+        tab1, tab2 = st.tabs(["Base Models", "SMOTE + Tuning"])
+
+        with tab1:
+            st.subheader("Base Models")
+            with st.spinner("Training..."):
+                _, base_metrics, _, note = train_holdout_models_cached(
+                    df_raw, TARGET_RISK_TYPE, test_size, drop_cols_for_model, fast_mode, use_smote=False
+                )
+            st.dataframe(base_metrics.round(3))
+            st.pyplot(plot_metrics_bar(base_metrics, "(Base)"))
+            st.info(note)
+
+        with tab2:
+            st.subheader("SMOTE + Tuning")
+            with st.spinner("Training..."):
+                _, tuned_metrics, best_params, _, note = smote_and_tune_logreg_pipeline(
+                    df_raw, TARGET_RISK_TYPE, test_size, drop_cols_for_model, fast_mode
+                )
+            st.write("**Best Parameters:**")
+            st.json(best_params)
+            st.dataframe(tuned_metrics.round(3))
+            st.info(note)
+
+
+if __name__ == "__main__":
+    main()
